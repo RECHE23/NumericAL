@@ -1759,7 +1759,7 @@ PyObject* module_compare(PyObject* /*self*/, PyObject* args)
                 using T           = element_of_t<tensor_type>;
                 const tensor_type& q {std::get<tensor_type>(*b)};
                 const auto         compared {[&](const auto& relation) { // broadcast_into's loops, the relation inlined in each
-                    result.emplace(numerical::detail::broadcast_into(p.data().data(), p.shape(), q.data().data(), q.shape(), [&relation](const T& x, const T& y) {
+                    result.emplace(numerical::broadcast_apply(p, q, [&relation](const T& x, const T& y) { // views read in place
                         if constexpr (std::is_same_v<T, boolean>) {
                             return boolean {relation(x.value, y.value)};
                         }
@@ -1831,7 +1831,7 @@ PyObject* module_logical(PyObject* /*self*/, PyObject* args)
             const sb::scoped_gil_release unlocked {releases_gil(std::max(a->size(), b->size()))};
             // The operator chosen once, outside the loops; on the bytes (each 0 or 1), which vectorise as such.
             const auto applied {[&](const auto& bits) {
-                result.emplace(numerical::detail::broadcast_into(a->data().data(), a->shape(), b->data().data(), b->shape(), [&bits](boolean p, boolean q) {
+                result.emplace(numerical::broadcast_apply(*a, *b, [&bits](boolean p, boolean q) { // views read in place
                     return boolean {bits(static_cast<unsigned char>(p.value), static_cast<unsigned char>(q.value)) != 0};
                 }));
             }};

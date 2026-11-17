@@ -8,6 +8,14 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Changed
+
+- **The functions by a table read a view where it lies** (`exp`, `expm1`, `exp2`, `log1p`, `atan`, `sinh`, `cosh`,
+  `tanh`, float `sin` and `cos`): row by row, a row stepping over elements gathered by pieces of 512, in place of a
+  contiguous copy first; a view whose rows lie far apart (a transpose) is still copied. The same bits. On an M1, `exp`
+  of `a[::2]` (200 000 doubles) 207 → 148 µs, of `m[:, 1:]` 218 → 173 µs; `tanh` 358 → 317 µs. The comparisons and the
+  logical operations read both operands where they lie too: `a[::2] < a[1::2]` 182 → 73 µs (NumPy 78).
+
 ## 2026.11.17 — 2026-11-17
 
 ### Added

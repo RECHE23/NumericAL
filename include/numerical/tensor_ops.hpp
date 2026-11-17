@@ -1888,14 +1888,15 @@ namespace numerical {
   } // namespace detail
 
   /*!
-   * \brief `op(a, b)` element by element, the operands broadcast against each other.
+   * \brief `op(a, b)` element by element, the operands broadcast against each other, in `op`'s result type (a
+   *        comparison's bools): a view read where it lies close (a slice, a transpose), copied otherwise.
    * \throws dimension_error If the shapes do not broadcast.
    */
   template <typename T,
             typename Op>
-  [[nodiscard]] tensor<T> broadcast_apply(const tensor<T>& a,
-                                          const tensor<T>& b,
-                                          const Op&        op)
+  [[nodiscard]] auto broadcast_apply(const tensor<T>& a,
+                                     const tensor<T>& b,
+                                     const Op&        op)
   {
     if (a.contiguous() && b.contiguous() && a.shape() == b.shape()) { // the common case, straight through
       return detail::pairs_into(a.origin(), b.origin(), a.shape(), op);
@@ -2068,6 +2069,286 @@ namespace numerical {
                    });
       return tensor<double> {shape, std::move(out)};
     }
+
+    //! \brief A function of `count` contiguous doubles into as many (the `*_into` kernels).
+    using doubles_into = void (*)(const double*, double*, std::size_t);
+
+    //! \brief A `*_into` kernel of doubles as a kernel of floats: each piece of 512 converted to doubles on the stack,
+    //!        the kernel of them, each rounded back once (\ref through_doubles's, piece by piece).
+    struct through_doubles_piece
+    {
+      doubles_into into; //!< The kernel of doubles.
+
+      //! \brief The kernel of the \p count floats at \p in into \p out.
+      void operator()(const float* in,
+                      float*       out,
+                      std::size_t  count) const
+      {
+        constexpr std::size_t     piece {512};
+        std::array<double, piece> wide  {};
+        std::array<double, piece> image {};
+        for (std::size_t first {0}; first < count; first += piece) {
+          const std::size_t size {std::min(piece, count - first)};
+          std::copy_n(in + first, size, wide.begin());
+          into(wide.data(), image.data(), size);
+          std::transform(image.begin(), image.begin() + static_cast<std::ptrdiff_t>(size), out + first, [](double y) { return static_cast<float>(y); });
+        }
+      }
+    };
+
+    /*!
+     * \brief \p kernel (`kernel(in, out, count)`, of contiguous elements) of every element of \p t: a contiguous tensor
+     *        at once by chunks of \ref elementwise_chunk among the threads; a view lying close (\ref lies_close; a
+     *        slice, its rows apart) read where it lies, each run of its last axis passed where it is contiguous and
+     *        gathered by pieces of 512 on the stack where its elements are apart; any other copied first. Each element
+     *        alone: the bits of the same elements laid row-major (a slice of 200 000 doubles' `exp` copied first took a
+     *        third more time).
+     */
+    template <typename T,
+              typename Kernel>
+    [[nodiscard]] tensor<T> runs_into(const tensor<T>& t,
+                                      const Kernel&    kernel)
+    {
+      const std::vector<std::size_t>& shape  {t.shape()};
+      const std::size_t               count  {t.size()};
+      buffer<T>                       out(count);
+      const std::size_t               chunks {(count + elementwise_chunk - 1) / elementwise_chunk};
+      if (t.contiguous() || !lies_close(t)) {
+        const T* const data {t.contiguous() ? t.origin() : t.data().data()};
+        parallel_for(chunks, elementwise_chunk, [&](std::size_t c) {
+                       const std::size_t first {c * elementwise_chunk};
+                       kernel(data + first, out.data() + first, std::min(elementwise_chunk, count - first));
+                     });
+        return tensor<T> {shape, std::move(out)};
+      }
+      const std::vector<std::ptrdiff_t>& strides {t.strides()};
+      const std::size_t                  rank    {shape.size()};
+      const std::size_t                  inner   {shape[rank - 1]};
+      const std::ptrdiff_t               step    {strides[rank - 1]};
+      const T* const                     origin  {t.origin()};
+      parallel_for(chunks, elementwise_chunk, [&](std::size_t c) {
+                     constexpr std::size_t    piece {512};
+                     std::array<T, piece>     gathered {};
+                     const std::size_t        first {c * elementwise_chunk};
+                     const std::size_t        last {std::min(first + elementwise_chunk, count)};
+                     std::vector<std::size_t> index(rank, 0);
+                     std::ptrdiff_t           at {0};
+                     std::size_t              column {first % inner};
+                     for (std::size_t axis {rank - 1}, rest {first / inner}; axis-- > 0;) { // the first row's position
+                       index[axis]  = rest % shape[axis];
+                       rest        /= shape[axis];
+                       at          += static_cast<std::ptrdiff_t>(index[axis]) * strides[axis];
+                     }
+                     for (std::size_t done {first}; done < last;) {
+                       const std::size_t n {std::min(inner - column, last - done)};
+                       const T* const    p {origin + at + (static_cast<std::ptrdiff_t>(column) * step)};
+                       if (step == 1) {
+                         kernel(p, out.data() + done, n);
+                       }
+                       else {
+                         for (std::size_t k {0}; k < n; k += piece) {
+                           const std::size_t size {std::min(piece, n - k)};
+                           for (std::size_t i {0}; i < size; ++i) {
+                             gathered[i] = p[static_cast<std::ptrdiff_t>(k + i) * step];
+                           }
+                           kernel(gathered.data(), out.data() + done + k, size);
+                         }
+                       }
+                       done   += n;
+                       column  = 0;
+                       for (std::size_t axis {rank - 1}; axis-- > 0;) { // odometer over the outer axes: carry on wrap
+                         ++index[axis];
+                         at += strides[axis];
+                         if (index[axis] < shape[axis]) {
+                           break;
+                         }
+                         at          -= strides[axis] * static_cast<std::ptrdiff_t>(shape[axis]);
+                         index[axis]  = 0;
+                       }
+                     }
+                   });
+      return tensor<T> {shape, std::move(out)};
+    }
+
+    //! \brief A function of every element of \p a, its kernel of doubles (\ref runs_into).
+    [[nodiscard]] inline tensor<double> by_runs(const tensor<double>& a,
+                                                doubles_into          into)
+    {
+      return runs_into(a, into);
+    }
+
+    //! \brief A function of every element of \p a, its kernel of doubles through doubles (\ref through_doubles_piece).
+    [[nodiscard]] inline tensor<float> by_runs(const tensor<float>& a,
+                                               doubles_into         into)
+    {
+      return runs_into(a, through_doubles_piece {into});
+    }
+
+    //! \brief `exp` of every element of \p a: of a contiguous copy (\ref exp_of).
+    template <typename T>
+    [[nodiscard]] tensor<T> exp_viewed(const tensor<T>& a)
+    {
+      return exp_of(a.data().data(), a.shape());
+    }
+
+    //! \brief `exp` of every `double` of \p a, a view read where it lies (\ref by_runs).
+    [[nodiscard]] inline tensor<double> exp_viewed(const tensor<double>& a)
+    {
+      return by_runs(a, &exp_into);
+    }
+
+    //! \brief `expm1` of every element of \p a: of a contiguous copy (\ref expm1_of).
+    template <typename T>
+    [[nodiscard]] tensor<T> expm1_viewed(const tensor<T>& a)
+    {
+      return expm1_of(a.data().data(), a.shape());
+    }
+
+    //! \brief `expm1` of every `double` of \p a, a view read where it lies (\ref by_runs).
+    [[nodiscard]] inline tensor<double> expm1_viewed(const tensor<double>& a)
+    {
+      return by_runs(a, &expm1_into);
+    }
+
+    //! \brief `expm1` of every `float` of \p a through doubles, a view read where it lies (\ref by_runs).
+    [[nodiscard]] inline tensor<float> expm1_viewed(const tensor<float>& a)
+    {
+      return by_runs(a, &expm1_into);
+    }
+
+    //! \brief `atan` of every element of \p a: of a contiguous copy (\ref atan_of).
+    template <typename T>
+    [[nodiscard]] tensor<T> atan_viewed(const tensor<T>& a)
+    {
+      return atan_of(a.data().data(), a.shape());
+    }
+
+    //! \brief `atan` of every `double` of \p a, a view read where it lies (\ref by_runs).
+    [[nodiscard]] inline tensor<double> atan_viewed(const tensor<double>& a)
+    {
+      return by_runs(a, &atan_into);
+    }
+
+    //! \brief `atan` of every `float` of \p a through doubles, a view read where it lies (\ref by_runs).
+    [[nodiscard]] inline tensor<float> atan_viewed(const tensor<float>& a)
+    {
+      return by_runs(a, &atan_into);
+    }
+
+    //! \brief `sinh` of every element of \p a: of a contiguous copy (\ref sinh_of).
+    template <typename T>
+    [[nodiscard]] tensor<T> sinh_viewed(const tensor<T>& a)
+    {
+      return sinh_of(a.data().data(), a.shape());
+    }
+
+    //! \brief `sinh` of every `double` of \p a, a view read where it lies (\ref by_runs).
+    [[nodiscard]] inline tensor<double> sinh_viewed(const tensor<double>& a)
+    {
+      return by_runs(a, &sinh_into);
+    }
+
+    //! \brief `sinh` of every `float` of \p a through doubles, a view read where it lies (\ref by_runs).
+    [[nodiscard]] inline tensor<float> sinh_viewed(const tensor<float>& a)
+    {
+      return by_runs(a, &sinh_into);
+    }
+
+    //! \brief `cosh` of every element of \p a: of a contiguous copy (\ref cosh_of).
+    template <typename T>
+    [[nodiscard]] tensor<T> cosh_viewed(const tensor<T>& a)
+    {
+      return cosh_of(a.data().data(), a.shape());
+    }
+
+    //! \brief `cosh` of every `double` of \p a, a view read where it lies (\ref by_runs).
+    [[nodiscard]] inline tensor<double> cosh_viewed(const tensor<double>& a)
+    {
+      return by_runs(a, &cosh_into);
+    }
+
+    //! \brief `cosh` of every `float` of \p a through doubles, a view read where it lies (\ref by_runs).
+    [[nodiscard]] inline tensor<float> cosh_viewed(const tensor<float>& a)
+    {
+      return by_runs(a, &cosh_into);
+    }
+
+    //! \brief `exp2` of every element of \p a: of a contiguous copy (\ref exp2_of).
+    template <typename T>
+    [[nodiscard]] tensor<T> exp2_viewed(const tensor<T>& a)
+    {
+      return exp2_of(a.data().data(), a.shape());
+    }
+
+    //! \brief `exp2` of every `double` of \p a, a view read where it lies (\ref by_runs).
+    [[nodiscard]] inline tensor<double> exp2_viewed(const tensor<double>& a)
+    {
+      return by_runs(a, &exp2_into);
+    }
+
+    //! \brief `log1p` of every element of \p a: of a contiguous copy (\ref log1p_of).
+    template <typename T>
+    [[nodiscard]] tensor<T> log1p_viewed(const tensor<T>& a)
+    {
+      return log1p_of(a.data().data(), a.shape());
+    }
+
+    //! \brief `log1p` of every `double` of \p a, a view read where it lies (\ref by_runs).
+    [[nodiscard]] inline tensor<double> log1p_viewed(const tensor<double>& a)
+    {
+      return by_runs(a, &log1p_into);
+    }
+
+    //! \brief `log1p` of every `float` of \p a through doubles, a view read where it lies (\ref by_runs).
+    [[nodiscard]] inline tensor<float> log1p_viewed(const tensor<float>& a)
+    {
+      return by_runs(a, &log1p_into);
+    }
+
+    //! \brief `sin` of every element of \p a: of a contiguous copy (\ref sin_of).
+    template <typename T>
+    [[nodiscard]] tensor<T> sin_viewed(const tensor<T>& a)
+    {
+      return sin_of(a.data().data(), a.shape());
+    }
+
+    //! \brief `sin` of every `float` of \p a through doubles, a view read where it lies (\ref by_runs).
+    [[nodiscard]] inline tensor<float> sin_viewed(const tensor<float>& a)
+    {
+      return by_runs(a, &float_sines_into<false>);
+    }
+
+    //! \brief `cos` of every element of \p a: of a contiguous copy (\ref cos_of).
+    template <typename T>
+    [[nodiscard]] tensor<T> cos_viewed(const tensor<T>& a)
+    {
+      return cos_of(a.data().data(), a.shape());
+    }
+
+    //! \brief `cos` of every `float` of \p a through doubles, a view read where it lies (\ref by_runs).
+    [[nodiscard]] inline tensor<float> cos_viewed(const tensor<float>& a)
+    {
+      return by_runs(a, &float_sines_into<true>);
+    }
+
+    //! \brief `tanh` of every element of \p a: of a contiguous copy (\ref tanh_of).
+    template <typename T>
+    [[nodiscard]] tensor<T> tanh_viewed(const tensor<T>& a)
+    {
+      return tanh_of(a.data().data(), a.shape());
+    }
+
+    //! \brief `tanh` of every `double` of \p a, a view read where it lies (\ref by_runs).
+    [[nodiscard]] inline tensor<double> tanh_viewed(const tensor<double>& a)
+    {
+      return by_runs(a, &tanh_into);
+    }
+
+    //! \brief `tanh` of every `float` of \p a through doubles, a view read where it lies (\ref by_runs).
+    [[nodiscard]] inline tensor<float> tanh_viewed(const tensor<float>& a)
+    {
+      return by_runs(a, &tanh_into);
+    }
   } // namespace detail
 
   /*!
@@ -2077,7 +2358,7 @@ namespace numerical {
   template <typename T>
   [[nodiscard]] tensor<T> exp(const tensor<T>& a)
   {
-    return detail::exp_of(a.data().data(), a.shape());
+    return detail::exp_viewed(a);
   }
 
   /*!
@@ -2087,7 +2368,7 @@ namespace numerical {
   template <std::floating_point T>
   [[nodiscard]] tensor<T> expm1(const tensor<T>& a)
   {
-    return detail::expm1_of(a.data().data(), a.shape());
+    return detail::expm1_viewed(a);
   }
 
   /*!
@@ -2097,7 +2378,7 @@ namespace numerical {
   template <std::floating_point T>
   [[nodiscard]] tensor<T> atan(const tensor<T>& a)
   {
-    return detail::atan_of(a.data().data(), a.shape());
+    return detail::atan_viewed(a);
   }
 
   /*!
@@ -2107,7 +2388,7 @@ namespace numerical {
   template <std::floating_point T>
   [[nodiscard]] tensor<T> sinh(const tensor<T>& a)
   {
-    return detail::sinh_of(a.data().data(), a.shape());
+    return detail::sinh_viewed(a);
   }
 
   /*!
@@ -2117,7 +2398,7 @@ namespace numerical {
   template <std::floating_point T>
   [[nodiscard]] tensor<T> cosh(const tensor<T>& a)
   {
-    return detail::cosh_of(a.data().data(), a.shape());
+    return detail::cosh_viewed(a);
   }
 
   /*!
@@ -2127,7 +2408,7 @@ namespace numerical {
   template <std::floating_point T>
   [[nodiscard]] tensor<T> exp2(const tensor<T>& a)
   {
-    return detail::exp2_of(a.data().data(), a.shape());
+    return detail::exp2_viewed(a);
   }
 
   //! \brief `log` of every element: `std::log` of a real one, \ref detail::complex_log of a complex one.
@@ -2144,7 +2425,7 @@ namespace numerical {
   template <std::floating_point T>
   [[nodiscard]] tensor<T> log1p(const tensor<T>& a)
   {
-    return detail::log1p_of(a.data().data(), a.shape());
+    return detail::log1p_viewed(a);
   }
 
   //! \brief `sin` of every element: `std::sin` of a real one (a `float` the `double`'s, \ref detail::sin_of), \ref
@@ -2152,7 +2433,7 @@ namespace numerical {
   template <typename T>
   [[nodiscard]] tensor<T> sin(const tensor<T>& a)
   {
-    return detail::sin_of(a.data().data(), a.shape());
+    return detail::sin_viewed(a);
   }
 
   //! \brief `cos` of every element: `std::cos` of a real one (a `float` the `double`'s, \ref detail::cos_of), \ref
@@ -2160,7 +2441,7 @@ namespace numerical {
   template <typename T>
   [[nodiscard]] tensor<T> cos(const tensor<T>& a)
   {
-    return detail::cos_of(a.data().data(), a.shape());
+    return detail::cos_viewed(a);
   }
 
   //! \brief `tan` of every element: `std::tan` of a real one, \ref detail::complex_tan of a complex one.
@@ -2177,7 +2458,7 @@ namespace numerical {
   template <typename T>
   [[nodiscard]] tensor<T> tanh(const tensor<T>& a)
   {
-    return detail::tanh_of(a.data().data(), a.shape());
+    return detail::tanh_viewed(a);
   }
 
   //! \brief The square root of every element: `std::sqrt` of a real one, \ref detail::complex_sqrt of a complex one.

@@ -15,6 +15,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -929,6 +930,73 @@ TEST(a_permutation_of_the_axes_is_a_view)
   EXPECT_THROWS((void)matrix.transposed({0, 0}), numerical::dimension_error);
   EXPECT_THROWS((void)matrix.transposed({0, 2}), numerical::dimension_error);
   EXPECT_THROWS((void)matrix.transposed({0}), numerical::dimension_error);
+}
+
+// The functions by a table read a view where its elements lie, row by row (gathered by pieces where its last axis
+// steps over elements, copied first where it lies far apart): the same bits, double and float, as of its contiguous
+// copy, over rows that a block of the threads begins midway, rows wider than a gathered piece, backwards and transposed;
+// and the bits of the kernels over a pointer to the elements (a borrowed NumPy array's).
+TEST(the_table_functions_read_a_view_where_it_lies)
+{
+  using all   = std::vector<bool>;
+  const auto drawn = [](shape s) {
+                       numerical::buffer<double> values(counting(s).size(), 0.0);
+                       for (std::size_t i {0}; i < values.size(); ++i) {
+                         values[i] = (static_cast<double>((i * 7919U) % 2001U) * 0.005) - 5.0;
+                       }
+                       return tensor<double> {std::move(s), std::move(values)};
+                     };
+  const tensor<double> cube {drawn({60, 50, 43})};
+  const tensor<double> wide {drawn({30, 1601})};
+  const auto           views = [&](const auto& c, const auto& w) {
+                                 using V = std::remove_cvref_t<decltype(c)>;
+                                 return std::vector<V> {
+                                   c.sliced({0, 0, 0}, {1, 1, 2}, {60, 50, 22}, all(3, true)),     // a step of 2 along each row
+                                   c.sliced({0, 0, 1}, {1, 1, 1}, {60, 50, 42}, all(3, true)),     // rows of 42 of 43
+                                   c.sliced({0, 49, 42}, {1, -3, -1}, {60, 17, 43}, all(3, true)), // backwards
+                                   c.transposed({2, 0, 1}),                                        // far apart
+                                   w.sliced({0, 0}, {1, 2}, {30, 801}, all(2, true)),              // rows past a piece
+                                 };
+                               };
+  const auto same_bits = [](const auto& x, const auto& y) {
+                           return x.shape() == y.shape() && x.size() == y.size() &&
+                                  std::memcmp(x.data().data(), y.data().data(), x.size() * sizeof(x.data()[0])) == 0;
+                         };
+  // the kernels over elements the caller holds (a NumPy array's, borrowed): the bits of the view's
+  const auto of_pointer = [&](const auto& view, const auto& copy) {
+                            namespace d = numerical::detail;
+                            const auto* const p {copy.data().data()};
+                            const auto&       s {copy.shape()};
+                            return same_bits(d::exp_of(p, s), numerical::exp(view)) && same_bits(d::expm1_of(p, s), numerical::expm1(view))
+                                   && same_bits(d::atan_of(p, s), numerical::atan(view)) && same_bits(d::sinh_of(p, s), numerical::sinh(view))
+                                   && same_bits(d::cosh_of(p, s), numerical::cosh(view)) && same_bits(d::exp2_of(p, s), numerical::exp2(view))
+                                   && same_bits(d::log1p_of(p, s), numerical::log1p(view)) && same_bits(d::sin_of(p, s), numerical::sin(view))
+                                   && same_bits(d::cos_of(p, s), numerical::cos(view)) && same_bits(d::tanh_of(p, s), numerical::tanh(view));
+                          };
+  const auto holds = [&](const auto& view) {
+                       using V = std::remove_cvref_t<decltype(view)>;
+                       const V copy {view.shape(), view.data()};
+                       return same_bits(numerical::exp(view), numerical::exp(copy)) &&
+                              same_bits(numerical::expm1(view), numerical::expm1(copy)) &&
+                              same_bits(numerical::atan(view), numerical::atan(copy)) &&
+                              same_bits(numerical::sinh(view), numerical::sinh(copy)) &&
+                              same_bits(numerical::cosh(view), numerical::cosh(copy)) &&
+                              same_bits(numerical::exp2(view), numerical::exp2(copy)) &&
+                              same_bits(numerical::log1p(view), numerical::log1p(copy)) &&
+                              same_bits(numerical::sin(view), numerical::sin(copy)) &&
+                              same_bits(numerical::cos(view), numerical::cos(copy)) &&
+                              same_bits(numerical::tanh(view), numerical::tanh(copy)) && of_pointer(view, copy);
+                     };
+  for (const tensor<double>& view : views(cube, wide)) {
+    EXPECT(!view.contiguous() && holds(view));
+  }
+  const tensor<float> cube32 {numerical::detail::converted<float>(cube)};
+  const tensor<float> wide32 {numerical::detail::converted<float>(wide)};
+  for (const tensor<float>& view : views(cube32, wide32)) {
+    EXPECT(!view.contiguous() && holds(view));
+  }
+  const tensor<double> whole {cube.sliced({0, 0, 0}, {1, 1, 1}, {60, 50, 43}, all(3, true))}; // contiguous as it lies
+  EXPECT(same_bits(numerical::exp(whole), numerical::exp(tensor<double> {whole.shape(), whole.data()})));
 }
 
 // A slice is a view past sliced_copy_most elements: each axis's range read where the elements lie, from its start by
