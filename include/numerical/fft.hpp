@@ -2250,6 +2250,27 @@ namespace numerical {
     }
 
     /*!
+     * \brief \p f (`f(source, axis)`, a transform along \p axis, negative from the last) of \p a: a transpose's elements
+     *        as they lie where \ref as_laid_along reads them (each line transformed on its own, its bits the same);
+     *        any other tensor's row-major.
+     */
+    template <typename T,
+              typename F>
+    [[nodiscard]] auto transformed_along(const tensor<T>& a,
+                                         std::ptrdiff_t   axis,
+                                         const F&         f) -> decltype(f(source_of(a), axis))
+    {
+      const auto rank  {static_cast<std::ptrdiff_t>(a.rank())};
+      const auto index {static_cast<std::size_t>(axis < 0 ? axis + rank : axis)}; // still negative: past any rank, f's to refuse
+      if (auto laid {as_laid_along(a, index, [&f](const tensor<T>& elements, std::size_t along) {
+                                     return f(source_of(elements), static_cast<std::ptrdiff_t>(along));
+                                   })}) {
+        return std::move(*laid);
+      }
+      return f(source_of(a), axis);
+    }
+
+    /*!
      * \brief The first \p kept of \p points elements of a line, \p in, into \p to, conjugated where \p inverse, then
      *        zeros. Its bounds and flags by value: read through a caller's references, each would be loaded again at
      *        every element, the writes to \p to possibly aliasing them, and the loop would not vectorise.
@@ -2947,7 +2968,9 @@ namespace numerical {
                               std::ptrdiff_t             axis = -1,
                               fft_norm                   norm = fft_norm::backward)
   {
-    return detail::transform_axis(detail::source_of(a), n, axis, norm, false);
+    return detail::transformed_along(a, axis, [&](const auto& source, std::ptrdiff_t along) {
+                                       return detail::transform_axis(source, n, along, norm, false);
+                                     });
   }
 
   /*!
@@ -2968,7 +2991,9 @@ namespace numerical {
                                             std::ptrdiff_t             axis = -1,
                                             fft_norm                   norm = fft_norm::backward)
   {
-    return detail::real_transform_of(detail::source_of(a), n, axis, norm, false);
+    return detail::transformed_along(a, axis, [&](const auto& source, std::ptrdiff_t along) {
+                                       return detail::real_transform_of(source, n, along, norm, false);
+                                     });
   }
 
   /*!
@@ -2988,7 +3013,9 @@ namespace numerical {
                                std::ptrdiff_t             axis = -1,
                                fft_norm                   norm = fft_norm::backward)
   {
-    return detail::transform_axis(detail::source_of(a), n, axis, norm, true);
+    return detail::transformed_along(a, axis, [&](const auto& source, std::ptrdiff_t along) {
+                                       return detail::transform_axis(source, n, along, norm, true);
+                                     });
   }
 
   /*!
@@ -3007,7 +3034,9 @@ namespace numerical {
                                              std::ptrdiff_t             axis = -1,
                                              fft_norm                   norm = fft_norm::backward)
   {
-    return detail::real_transform_of(detail::source_of(a), n, axis, norm, true);
+    return detail::transformed_along(a, axis, [&](const auto& source, std::ptrdiff_t along) {
+                                       return detail::real_transform_of(source, n, along, norm, true);
+                                     });
   }
 
   namespace detail {
@@ -3020,6 +3049,13 @@ namespace numerical {
     [[nodiscard]] tensor<T> rolled(const tensor<T>&                a,
                                    const std::vector<std::size_t>& shifts)
     {
+      if (const auto laid {a.laid_out()}) { // a transpose: its elements rolled as they lie, each axis by its own shift
+        std::vector<std::size_t> lying(shifts.size());
+        for (std::size_t k {0}; k < lying.size(); ++k) {
+          lying[k] = shifts[laid->second[k]];
+        }
+        return rolled(laid->first, lying).transposed(view_axes(laid->second));
+      }
       const std::vector<std::size_t>& shape {a.shape()};
       buffer<T>                       out(a.data().size());
       if (out.empty() || shape.empty()) { // an empty tensor, or a number: itself
@@ -3112,7 +3148,7 @@ namespace numerical {
                                              std::ptrdiff_t             axis = -1,
                                              fft_norm                   norm = fft_norm::backward)
   {
-    return detail::rfft_of(detail::source_of(a), n, axis, norm);
+    return detail::transformed_along(a, axis, [&](const auto& source, std::ptrdiff_t along) { return detail::rfft_of(source, n, along, norm); });
   }
 
   /*!
@@ -3132,7 +3168,7 @@ namespace numerical {
                                 std::ptrdiff_t                 axis = -1,
                                 fft_norm                       norm = fft_norm::backward)
   {
-    return detail::irfft_of(detail::source_of(a), n, axis, norm);
+    return detail::transformed_along(a, axis, [&](const auto& source, std::ptrdiff_t along) { return detail::irfft_of(source, n, along, norm); });
   }
 
   //! \brief \p norm with its forward and backward exchanged, as NumPy's `hfft` and `ihfft` take it.
@@ -3157,9 +3193,8 @@ namespace numerical {
                                std::ptrdiff_t                 axis = -1,
                                fft_norm                       norm = fft_norm::backward)
   {
-    buffer<std::complex<T>> conjugated(a.data().size());
-    std::transform(a.data().begin(), a.data().end(), conjugated.begin(), [](const std::complex<T>& v) { return std::conj(v); });
-    return irfft(tensor<std::complex<T>> {a.shape(), std::move(conjugated)}, n, axis, swapped(norm));
+    const auto conjugated {[](const std::complex<T>& v) { return std::conj(v); }}; // a transpose's as its elements lie
+    return irfft(detail::parallel_map(a, conjugated), n, axis, swapped(norm));
   }
 
   /*!
@@ -3177,10 +3212,8 @@ namespace numerical {
                                               std::ptrdiff_t             axis = -1,
                                               fft_norm                   norm = fft_norm::backward)
   {
-    tensor<std::complex<T>> spectrum {rfft(a, n, axis, swapped(norm))};
-    buffer<std::complex<T>> conjugated(spectrum.data().size());
-    std::transform(spectrum.data().begin(), spectrum.data().end(), conjugated.begin(), [](const std::complex<T>& v) { return std::conj(v); });
-    return tensor<std::complex<T>> {spectrum.shape(), std::move(conjugated)};
+    const auto conjugated {[](const std::complex<T>& v) { return std::conj(v); }}; // a transpose's as its elements lie
+    return detail::parallel_map(rfft(a, n, axis, swapped(norm)), conjugated);
   }
 
   namespace detail {
@@ -3515,7 +3548,9 @@ namespace numerical {
                                            const std::optional<bool>&        orthogonalize,
                                            bool                              inverse)
     {
-      return trig_transform(source_of(a), family, type, n, axis, norm, orthogonalize, inverse);
+      return transformed_along(a, axis, [&](const fft_source<R>& source, std::ptrdiff_t along) {
+                                 return trig_transform(source, family, type, n, along, norm, orthogonalize, inverse);
+                               });
     }
   } // namespace detail
 

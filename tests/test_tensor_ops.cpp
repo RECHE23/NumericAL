@@ -953,19 +953,24 @@ TEST(a_transpose_is_laid_out_as_its_elements_lie)
 }
 
 // Along an axis of a transpose, its elements as they lie along the matching axis, none copied: the scans, the sorts,
-// the partitions, the extremes' indices and the counts of every axis of transposes of order 2 and 3 the bits of their
-// contiguous copies'; an axis past the rank refused alike.
+// the partitions, the reductions, the extremes' indices and the counts of every axis of transposes of order 2 and 3 the
+// bits of their contiguous copies'; of every element, the extremes and an integer sum (in any order the same); an axis
+// past the rank refused alike.
 TEST(a_transpose_along_an_axis_reads_its_elements_as_they_lie)
 {
-  numerical::buffer<double> values(std::size_t {30} *40 * 7);
+  numerical::buffer<double>       values(std::size_t {30} *40 * 7);
+  numerical::buffer<std::int64_t> integers(values.size());
   for (std::size_t i {0}; i < values.size(); ++i) {
-    values[i] = static_cast<double>((i * 7919U) % 101U) - 50.0; // ties, zeros, negatives
+    const auto drawn {static_cast<std::int64_t>((i * 7919U) % 101U) - 50};
+    values[i]   = static_cast<double>(drawn) * 0.37; // ties, zeros, negatives, sums rounded
+    integers[i] = drawn * 3037000493LL;              // sums wrapped
   }
   const tensor<double>           cube {{30, 40, 7}, values};
   const auto                     same = [](const auto& x, const auto& y) { return x.shape() == y.shape() && x.data() == y.data(); };
   const std::vector<std::size_t> kths {3, 5};
   bool                           all  {true};
-  for (const tensor<double>& view : {cube.transposed({2, 0, 1}), cube.transposed({1, 2, 0}), cube.reshaped({1200, 7}).transposed()}) {
+  for (const tensor<double>& view : {cube.transposed({2, 0, 1}), cube.transposed({1, 2, 0}), cube.transposed({1, 0, 2}),
+                                     cube.reshaped({1200, 7}).transposed()}) {
     const tensor<double> copy {view.shape(), view.data()};
     EXPECT(view.laid_out().has_value());
     for (std::size_t axis {0}; axis < view.rank(); ++axis) {
@@ -974,13 +979,111 @@ TEST(a_transpose_along_an_axis_reads_its_elements_as_they_lie)
             && same(numerical::partition(view, kths, axis), numerical::partition(copy, kths, axis))
             && same(numerical::argpartition(view, kths, axis), numerical::argpartition(copy, kths, axis))
             && same(numerical::argmax(view, axis), numerical::argmax(copy, axis)) && same(numerical::argmin(view, axis), numerical::argmin(copy, axis))
-            && same(numerical::count_nonzero(view, axis), numerical::count_nonzero(copy, axis));
+            && same(numerical::count_nonzero(view, axis), numerical::count_nonzero(copy, axis))
+            && same(numerical::sum(view, axis), numerical::sum(copy, axis)) && same(numerical::mean(view, axis), numerical::mean(copy, axis))
+            && same(numerical::max(view, axis), numerical::max(copy, axis)) && same(numerical::min(view, axis), numerical::min(copy, axis))
+            && same(numerical::prod(view, axis), numerical::prod(copy, axis));
     }
     EXPECT_THROWS((void)numerical::argmax(view, view.rank()), numerical::dimension_error);
     EXPECT_THROWS((void)numerical::cumsum(view, view.rank()), numerical::dimension_error);
+    EXPECT_THROWS((void)numerical::sum(view, view.rank()), numerical::dimension_error);
     EXPECT(numerical::count_nonzero(view) == numerical::count_nonzero(copy));
+    EXPECT(numerical::max(view) == numerical::max(copy) && numerical::min(view) == numerical::min(copy));
+  }
+  const tensor<std::int64_t> whole {{30, 40, 7}, integers};
+  for (const tensor<std::int64_t>& view : {whole.transposed({2, 0, 1}), whole.reshaped({1200, 7}).transposed()}) {
+    const tensor<std::int64_t> copy {view.shape(), view.data()};
+    EXPECT(numerical::sum(view) == numerical::sum(copy) && numerical::max(view) == numerical::max(copy));
+    for (std::size_t axis {0}; axis < view.rank(); ++axis) {
+      all = all && same(numerical::sum(view, axis), numerical::sum(copy, axis)) && same(numerical::prod(view, axis), numerical::prod(copy, axis));
+    }
   }
   EXPECT(all);
+}
+
+// An operation of two tensors reads a transpose where its elements lie: against one element (a number) as the
+// element-wise functions do, against a transpose alike pair by pair; the bits, and a comparison's bools, of the
+// contiguous copies'. One element of more axes broadcasts them; a transpose against another permutation's or a
+// slice's is copied.
+TEST(an_operation_of_two_tensors_reads_transposes_where_they_lie)
+{
+  using all = std::vector<bool>;
+  numerical::buffer<double> values(std::size_t {40} *30 * 7);
+  for (std::size_t i {0}; i < values.size(); ++i) {
+    values[i] = (static_cast<double>((i * 7919U) % 2001U) * 0.005) - 5.0;
+  }
+  const tensor<double> cube   {{40, 30, 7}, values};
+  const tensor<double> other  {cube * tensor<double> {{}, {1.5}}};
+  const tensor<double> number {{}, {0.75}};
+  const tensor<double> one    {{1, 1, 1}, {-2.25}};
+  const auto           same   = [](const auto& x, const auto& y) {
+                                  return x.shape() == y.shape() && std::memcmp(x.data().data(), y.data().data(), x.size() * sizeof(x.data()[0])) == 0;
+                                };
+  const auto           copied = [](const tensor<double>& t) { return tensor<double> {t.shape(), t.data()}; };
+  const auto           less   = [](double x, double y) { return static_cast<std::uint8_t>(x < y); }; // a comparison's
+  bool                 holds  {true};
+  for (const tensor<double>& view : {cube.transposed({2, 0, 1}), cube.reshaped({1200, 7}).transposed(),
+                                     cube.sliced({0, 0, 0}, {1, 2, 1}, {40, 15, 7}, all(3, true))}) {
+    const tensor<double> copy {copied(view)};
+    holds = holds && same(view + number, copy + number) && same(number - view, number - copy) && same(view * one, copy * one)
+            && same(one / view, one / copy) && same(numerical::broadcast_apply(view, number, less), numerical::broadcast_apply(copy, number, less));
+  }
+  const tensor<double> a {cube.transposed({2, 0, 1})};
+  const tensor<double> b {other.transposed({2, 0, 1})};
+  const tensor<double> c {tensor<double> {{7, 30, 40}, values}.transposed({0, 2, 1})};
+  EXPECT(a.shape() == c.shape() && a.laid_out() && c.laid_out() && a.laid_out()->second != c.laid_out()->second);
+  holds = holds && same(a + b, copied(a) + copied(b)) && same(a + c, copied(a) + copied(c)) && same(a - c, copied(a) - copied(c)) && same(b * a, copied(b) * copied(a))
+          && same(numerical::broadcast_apply(a, b, less), numerical::broadcast_apply(copied(a), copied(b), less));
+  EXPECT(holds);
+  const tensor<double> row {{3}, {1.0, 2.0, 3.0}};
+  EXPECT((row + one).shape() == (shape {1, 1, 3}) && (one * row).data() == (numerical::buffer<double> {-2.25, -4.5, -6.75}));
+  EXPECT((tensor<double> {{0, 3}, {}} + number).shape() == (shape {0, 3}));
+  const tensor<double> column {{2, 1}, {10.0, 20.0}}; // a column against short rows, on either side
+  const tensor<double> rows   {{2, 3}, {1.0, 2.0, 3.0, 4.0, 5.0, 6.0}};
+  EXPECT((column + rows).data() == (numerical::buffer<double> {11.0, 12.0, 13.0, 24.0, 25.0, 26.0}) && (rows + column).data() == (column + rows).data());
+  // a column read where it lies, every other element of a longer one, against rows together; a contiguous column
+  // against rows apart (the first 3 of 40): the copies' bits
+  using all_axes = std::vector<bool>;
+  const tensor<double> tall        {cube.reshaped({8400, 1})};
+  const tensor<double> wide        {cube.reshaped({1050, 8})};
+  const tensor<double> every_other {tall.sliced({0, 0}, {2, 1}, {1200, 1}, all_axes(2, true))};
+  const tensor<double> first_three {wide.sliced({0, 0}, {1, 1}, {1050, 3}, all_axes(2, true))};
+  const tensor<double> short_rows  {copied(tall.sliced({0, 0}, {1, 1}, {1200, 1}, all_axes(2, true))) * tensor<double> {{1, 3}, {1.0, 2.0, 3.0}}};
+  EXPECT(!every_other.contiguous() && !first_three.contiguous() && short_rows.shape() == (shape {1200, 3}));
+  EXPECT(same(every_other + short_rows, copied(every_other) + short_rows) && same(short_rows + every_other, short_rows + copied(every_other)));
+  const tensor<double> part     {copied(tall.sliced({0, 0}, {1, 1}, {1050, 1}, all_axes(2, true)))};
+  EXPECT(same(part + first_three, part + copied(first_three)) && same(first_three + part, copied(first_three) + part));
+  const tensor<double> stepping {wide.sliced({0, 0}, {1, 2}, {1050, 3}, all_axes(2, true))}; // short rows stepping 2
+  EXPECT(same(part + stepping, part + copied(stepping)) && same(first_three + copied(first_three), copied(first_three) + copied(first_three)));
+  EXPECT(same(one + row, (tensor<double> {{1, 1, 3}, {-1.25, -0.25, 0.75}})));
+}
+
+// The triangle of a transpose is the other triangle of its elements as they lie, the diagonal's side reversed; of a
+// stack whose matrices' axes lie last, theirs; any other permutation's copied. The bits of the contiguous copy's, every
+// diagonal from past one corner to past the other.
+TEST(the_triangle_of_a_transpose_is_its_elements_other_triangle)
+{
+  numerical::buffer<double> values(std::size_t {3} *4 * 9 * 11);
+  for (std::size_t i {0}; i < values.size(); ++i) {
+    values[i] = i % 5 == 0 ? -0.0 : static_cast<double>(i) - 200.0;
+  }
+  const tensor<double> stack {{3, 4, 9, 11}, values};
+  const auto           same = [](const tensor<double>& x, const tensor<double>& y) {
+                                return x.shape() == y.shape() && std::memcmp(x.data().data(), y.data().data(), x.size() * sizeof(double)) == 0;
+                              };
+  bool                 holds {true};
+  for (const tensor<double>& view : {stack.reshaped({108, 11}).transposed(), stack.transposed({1, 0, 3, 2}), stack.transposed({1, 0, 2, 3}),
+                                     stack.transposed({0, 2, 1, 3}), stack.reshaped({12, 9, 11}).transposed({1, 2, 0}),
+                                     stack.reshaped({12, 9, 11}).transposed({2, 1, 0}), stack.reshaped({12, 9, 11}).transposed({2, 0, 1})}) {
+    const tensor<double> copy {view.shape(), view.data()};
+    for (const std::ptrdiff_t k : {std::numeric_limits<std::ptrdiff_t>::min(), std::ptrdiff_t {-120}, std::ptrdiff_t {-4}, std::ptrdiff_t {0},
+                                   std::ptrdiff_t {3}, std::ptrdiff_t {120}, std::numeric_limits<std::ptrdiff_t>::max()}) {
+      for (const bool lower : {true, false}) {
+        holds = holds && same(numerical::triangle(view, k, lower), numerical::triangle(copy, k, lower));
+      }
+    }
+  }
+  EXPECT(holds);
 }
 
 // The functions by a table read a view where its elements lie, row by row (gathered by pieces where its last axis

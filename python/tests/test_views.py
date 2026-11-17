@@ -107,6 +107,18 @@ _FLOAT_OPERATIONS = [
     ("qr", lambda x: tuple(numerical.linalg.qr(x))),
     ("norm", numerical.linalg.norm),
     ("fft", numerical.fft.fft),
+    ("number minus", lambda x: 2.0 - x),
+    ("less than a number", lambda x: x.real < 0.25 if x.dtype.startswith("complex") else x < 0.25),
+    ("plus a view alike", lambda x: x + x * 0.5),
+    ("prod axis 0", lambda x: numerical.prod(x, axis=0)),
+    ("triu", lambda x: numerical.triu(x, 1)),
+    ("tril", lambda x: numerical.tril(x, -2)),
+    ("fft axis 0", lambda x: numerical.fft.fft(x, axis=0)),
+    ("ifft axis 0 padded", lambda x: numerical.fft.ifft(x, 9, axis=0)),
+    ("rfft axis 0", lambda x: numerical.fft.rfft(x, axis=0)),
+    ("ihfft axis 0", lambda x: numerical.fft.ihfft(x, axis=0)),
+    ("dct axis 0", lambda x: numerical.fft.dct(x, axis=0)),
+    ("fftshift", numerical.fft.fftshift),
     ("tolist", lambda x: numerical.asarray(x.tolist(), dtype=x.dtype)),
 ]
 
@@ -234,7 +246,7 @@ class TestViews(unittest.TestCase):
                     for op in ("sum", "max", "min", "any", "all", "count_nonzero"):
                         self.assertEqual(numerical.asarray(getattr(numerical, op)(view)).tolist(),
                                          np.asarray(getattr(np, op)(expected(source))).tolist())
-                    for op in ("sum", "max", "min", "any", "all"):
+                    for op in ("sum", "max", "min", "any", "all", "mean"):
                         for axis in range(view.ndim):
                             self.assertEqual(getattr(numerical, op)(view, axis=axis).tolist(),
                                              getattr(np, op)(expected(source), axis=axis).tolist())

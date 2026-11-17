@@ -31,9 +31,18 @@ A change that can break code is listed under **Breaking** and held for a month's
   the result transposed back (`exp(m.T)` of 2000 × 2000 2.2 → 1.2 ms, `clip(m.T)` 1.6 → 0.63 ms); along an axis,
   `cumsum`, `cumprod`, `sort`, `argsort`, `partition`, `argpartition`, `argmax`, `argmin` and `count_nonzero` take
   the matching axis of those elements (`argmax(m.T, axis=0)` 2.3 → 0.29 ms, NumPy 5.3; `cumsum` 2.7 → 0.72 ms;
-  `sort` 13.4 → 7.2 ms); over every element, the reductions whose answer no order changes (`max`, `min`, `any`,
+  `sort` 13.4 → 7.2 ms), but the scans, sorts and partitions along the transpose's last axis, whose lines its
+  elements hold as columns, copy them out as rows first, which is faster; over every element, the reductions whose answer no order changes (`max`, `min`, `any`,
   `all`, `count_nonzero`, a mask's `sum` and `mean`, an `int64` `sum`) read them in memory order. The same bits; a
   float's `sum` and `mean` over every element keep the view's order (their rounding).
+- **Operations of two tensors, the library's reductions, the triangles and the transforms read a transpose where it
+  lies.** A tensor and a number (one element of as many axes or fewer) map the tensor's elements as the element-wise
+  functions do: on an M1, `m.T + 2` of 2000 × 2000 1.40 → 0.48 ms, `m.T < 0` 1.17 → 0.27 ms; two transposes alike pair
+  their elements as they lie, `m.T + n.T` 2.66 → 0.70 ms. The C++ `sum`, `mean`, `max`, `min` and `prod` along an
+  axis, and `max`, `min` and an integer `sum` of every element, read a transpose as Python's did. `triu` and `tril` of a
+  transpose take the other triangle of its elements (`triu(m.T)` 1.38 → 0.37 ms). `fft`, `ifft`, `rfft`, `irfft`,
+  `hfft`, `ihfft`, `dct`, `dst` and their inverses along a transpose's axes but its last (`fft(z.T, axis=0)` of 1024 ×
+  1024 complex 2.27 → 0.74 ms, `rfft(m.T, axis=0)` 5.2 → 1.6 ms), and `fftshift` (1.6 → 0.4 ms). The same bits.
 - **A negative fractional power of a Hermitian matrix five to ten times faster** (`fractional_matrix_power`): the
   Schur form by the Hermitian eigensolver, `T` the upper triangle of `Vᴴ A V` (its rounding kept, as a Schur form keeps
   it) and `T^t` to first order in that rounding in place of the Padé steps; the condition that chooses `⌊p⌋` or `⌈p⌉`

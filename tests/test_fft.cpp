@@ -1252,3 +1252,55 @@ TEST(a_cosine_line_has_the_same_bits_where_fma_is_the_instruction)
     }
   }
 }
+
+// A transform along an axis of a transpose reads its elements as they lie along the matching axis, none copied, the
+// result's axes put back: every transform, along every axis (from either end), of lengths of a power of two, odd and
+// prime (Bluestein's), of their own points, padded and cut, the bits of the contiguous copy's; fftshift its elements;
+// an axis past the rank refused alike; on every path this processor runs.
+TEST(a_transform_along_a_transpose_reads_its_elements_as_they_lie)
+{
+  using C = std::complex<double>;
+  const auto same = [](const auto& x, const auto& y) {
+                      return x.shape() == y.shape() && std::memcmp(x.data().data(), y.data().data(), x.size() * sizeof(x.data()[0])) == 0;
+                    };
+  bool holds {true};
+  for (const numerical::gemm_path path : {numerical::gemm_path::portable, numerical::gemm_path::neon, numerical::gemm_path::avx2,
+                                          numerical::gemm_path::avx512, numerical::gemm_path::amx}) {
+    if (numerical::limit_gemm_path(path) != path) {
+      continue; // a path this processor does not run
+    }
+    for (const auto& [rows, cols] : {std::pair<std::size_t, std::size_t> {16, 12}, {7, 97}, {33, 8}}) {
+      numerical::buffer<double> reals(3 * rows * cols);
+      numerical::buffer<C>      complexes(reals.size());
+      for (std::size_t i {0}; i < reals.size(); ++i) {
+        reals[i]     = std::sin(static_cast<double>(i) * 0.731) * 3.0;
+        complexes[i] = C {reals[i], std::cos(static_cast<double>(i) * 1.37)};
+      }
+      const tensor<double> cube  {{3, rows, cols}, reals};
+      const tensor<C>      waves {{3, rows, cols}, complexes};
+      for (const std::vector<std::size_t>& axes : {std::vector<std::size_t> {2, 0, 1}, std::vector<std::size_t> {1, 2, 0}, std::vector<std::size_t> {1, 0, 2}}) {
+        const tensor<double> view      {cube.transposed(axes)};
+        const tensor<C>      spun      {waves.transposed(axes)};
+        const tensor<double> copy      {view.shape(), view.data()};
+        const tensor<C>      spun_copy {spun.shape(), spun.data()};
+        for (const std::ptrdiff_t axis : {std::ptrdiff_t {-1}, std::ptrdiff_t {0}, std::ptrdiff_t {1}, std::ptrdiff_t {2}}) {
+          for (const std::optional<std::size_t> n : {std::optional<std::size_t> {}, std::optional<std::size_t> {10}}) {
+            holds = holds && same(numerical::fft(view, n, axis), numerical::fft(copy, n, axis)) && same(numerical::ifft(view, n, axis), numerical::ifft(copy, n, axis))
+                    && same(numerical::fft(spun, n, axis), numerical::fft(spun_copy, n, axis)) && same(numerical::ifft(spun, n, axis), numerical::ifft(spun_copy, n, axis))
+                    && same(numerical::rfft(view, n, axis), numerical::rfft(copy, n, axis)) && same(numerical::irfft(spun, n, axis), numerical::irfft(spun_copy, n, axis))
+                    && same(numerical::hfft(spun, n, axis), numerical::hfft(spun_copy, n, axis)) && same(numerical::ihfft(view, n, axis), numerical::ihfft(copy, n, axis))
+                    && same(numerical::dct(view, 2, n, axis), numerical::dct(copy, 2, n, axis)) && same(numerical::idct(view, 3, n, axis), numerical::idct(copy, 3, n, axis))
+                    && same(numerical::dst(view, 4, n, axis), numerical::dst(copy, 4, n, axis));
+          }
+        }
+        const std::vector<std::ptrdiff_t> ends {0, -1};
+        holds = holds && same(numerical::fftshift(view, ends), numerical::fftshift(copy, ends))
+                && same(numerical::fftshift(spun, 1, true), numerical::fftshift(spun_copy, 1, true));
+        EXPECT_THROWS((void)numerical::fft(view, std::nullopt, 3), numerical::dimension_error);
+        EXPECT_THROWS((void)numerical::rfft(view, std::nullopt, -4), numerical::dimension_error);
+      }
+    }
+  }
+  (void)numerical::limit_gemm_path(numerical::gemm_path::amx);
+  EXPECT(holds);
+}

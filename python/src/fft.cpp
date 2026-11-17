@@ -12,7 +12,7 @@ any_tensor fft_axis(const any_tensor& v, std::size_t n, std::size_t axis, int no
 {
     const auto scaling {static_cast<numerical::fft_norm>(norm)};
     return visit_numeric([&](const auto& t) -> any_tensor {
-        const sb::scoped_gil_release unlocked {releases_gil(t.data().size() + n)};
+        const sb::scoped_gil_release unlocked {releases_gil(t.size() + n)};
         const auto                   index {static_cast<std::ptrdiff_t>(axis)};
         return any_tensor {inverse ? numerical::ifft(t, n, index, scaling) : numerical::fft(t, n, index, scaling)};
     }, v);
@@ -51,7 +51,7 @@ any_tensor rfft_axis(const any_tensor& v, std::size_t n, std::size_t axis, int n
     return visit_numeric([&](const auto& t) -> any_tensor {
         using T = std::remove_cvref_t<decltype(t.data()[0])>;
         if constexpr (std::is_floating_point_v<T>) {
-            const sb::scoped_gil_release unlocked {releases_gil(t.data().size() + n)};
+            const sb::scoped_gil_release unlocked {releases_gil(t.size() + n)};
             const auto                   index {static_cast<std::ptrdiff_t>(axis)};
             return any_tensor {hermitian ? numerical::ihfft(t, n, index, scaling) : numerical::rfft(t, n, index, scaling)};
         }
@@ -72,7 +72,7 @@ any_tensor trig_axis(const any_tensor& v, bool sine, int type, std::size_t n, st
     const auto                index {static_cast<std::ptrdiff_t>(axis)};
     return visit_numeric([&](const auto& t) -> any_tensor {
         using T = std::remove_cvref_t<decltype(t.data()[0])>;
-        const sb::scoped_gil_release unlocked {releases_gil(t.data().size() + n)};
+        const sb::scoped_gil_release unlocked {releases_gil(t.size() + n)};
         if constexpr (std::is_floating_point_v<T>) {
             return any_tensor {numerical::detail::trig_transform(t, family, type, n, index, scaling, weighted, inverse)};
         }
@@ -98,7 +98,7 @@ any_tensor irfft_axis(const any_tensor& v, std::size_t n, std::size_t axis, int 
     return visit_numeric([&](const auto& t) -> any_tensor {
         using T = std::remove_cvref_t<decltype(t.data()[0])>;
         if constexpr (numerical::detail::split_complex<T>) {
-            const sb::scoped_gil_release unlocked {releases_gil(t.data().size() + n)};
+            const sb::scoped_gil_release unlocked {releases_gil(t.size() + n)};
             const auto                   index {static_cast<std::ptrdiff_t>(axis)};
             return any_tensor {hermitian ? numerical::hfft(t, n, index, scaling) : numerical::irfft(t, n, index, scaling)};
         }

@@ -2083,8 +2083,9 @@ PyObject* reduced(std::string_view name, const any_tensor* a, Py_ssize_t axis)
 } // namespace
 
 // _reduce(op, a, axis) -> number or Tensor: op one of "sum", "mean", "max", "min", "any", "all"; axis -1 for every
-// element (a number), else a non-negative axis (a Tensor without it). A transpose along an axis is its elements as they
-// lie along the matching axis, the same lines in the same order, none copied; the result's axes put back in its order.
+// element (a number), else a non-negative axis (a Tensor without it). The library's reductions read a transpose where
+// it lies; the truths and a mask's counts here alike: of every element in any order the same answer, along an axis
+// each line of its elements as they lie along the matching axis, the result's axes put back in its order.
 PyObject* module_reduce(PyObject* /*self*/, PyObject* args)
 {
     const char* op   = nullptr;
@@ -2098,19 +2099,14 @@ PyObject* module_reduce(PyObject* /*self*/, PyObject* args)
     if (a == nullptr) {
         return nullptr;
     }
+    if (name != "any" && name != "all" && !is_bool(*a)) { // the library's
+        return reduced(name, a, axis);
+    }
     std::optional<any_tensor> laid;
     std::vector<std::size_t>  back; // the result's axes, from the laid out one's
     try {
         std::visit([&](const auto& t) {
-            if (axis < 0) { // every element: in any order the same answer but a float's sum or mean (its rounding)
-                const bool any_order {name == "max" || name == "min" || name == "any" || name == "all" || is_bool(*a)
-                                      || (is_int(*a) && name == "sum")};
-                if (auto found {t.laid_out()}; found && any_order) {
-                    laid.emplace(std::move(found->first));
-                }
-                return;
-            }
-            if (static_cast<std::size_t>(axis) >= t.rank()) {
+            if (axis >= 0 && static_cast<std::size_t>(axis) >= t.rank()) {
                 return;
             }
             auto found {t.laid_out()};
@@ -2118,10 +2114,11 @@ PyObject* module_reduce(PyObject* /*self*/, PyObject* args)
                 return;
             }
             auto& [elements, order] = *found;
-            back = numerical::detail::reduced_axes(order, static_cast<std::size_t>(axis));
-            const auto along {static_cast<std::size_t>(std::ranges::find(order, static_cast<std::size_t>(axis)) - order.begin())};
             laid.emplace(std::move(elements));
-            axis = static_cast<Py_ssize_t>(along);
+            if (axis >= 0) {
+                back = numerical::detail::reduced_axes(order, static_cast<std::size_t>(axis));
+                axis = static_cast<Py_ssize_t>(std::ranges::find(order, static_cast<std::size_t>(axis)) - order.begin());
+            }
         }, *a);
     }
     catch (...) {
