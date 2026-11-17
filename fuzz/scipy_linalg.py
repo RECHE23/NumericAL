@@ -201,6 +201,22 @@ def op_care(a, rng, scale):
                      lambda: sl.solve_continuous_are(a, b, q, r), measure)
 
 
+def op_care_scaled(a, rng, scale):
+    """The continuous equation with Q, R and B each scaled by 10⁻⁸ to 10¹⁰: the Hamiltonian's fast path against SciPy's
+    balanced pencil (unbalanced, a Q of 10¹⁰ beside an R of 1 left its X wrong at 10⁻³)."""
+    n = a.shape[0]
+    a = stable(a / scale, 1.0)
+    b = rng.standard_normal((n, max(1, n // 3))) * 10.0 ** rng.uniform(-8, 10)
+    q = positive(rng.standard_normal((n, n))) * 10.0 ** rng.uniform(-8, 10)
+    r = positive(rng.standard_normal((b.shape[1],) * 2)) * 10.0 ** rng.uniform(-8, 10)
+    def measure(x):
+        g = x @ b
+        return ratio(fro(a.conj().T @ x + x @ a - g @ np.linalg.solve(r, g.conj().T) + q),
+                     2 * fro(a) * fro(x) + fro(g) ** 2 / max(fro(r), 1e-300) + fro(q))
+    return residuals(lambda: np.asarray(numerical.solve_continuous_are(a, b, q, r)),
+                     lambda: sl.solve_continuous_are(a, b, q, r), measure)
+
+
 def op_dare(a, rng, scale):
     n = a.shape[0]
     a = contractive(a / scale)
@@ -291,12 +307,13 @@ def op_expm_frechet(a, rng, scale):
 OPERATIONS = (("logm", op_logm), ("sqrtm", op_sqrtm), ("polar", op_polar), ("ldl", op_ldl),
               ("qr-pivoting", op_qr_pivoting), ("schur", op_schur), ("solve_sylvester", op_sylvester),
               ("solve_continuous_lyapunov", op_lyapunov), ("solve_discrete_lyapunov", op_discrete_lyapunov),
-              ("solve_continuous_are", op_care), ("solve_discrete_are", op_dare), ("lu_factor/lu_solve", op_lu),
+              ("solve_continuous_are", op_care), ("solve_continuous_are (scaled terms)", op_care_scaled),
+              ("solve_discrete_are", op_dare), ("lu_factor/lu_solve", op_lu),
               ("solve_triangular", op_triangular), ("solve_banded", op_banded), ("solve_toeplitz", op_toeplitz),
               ("solve_circulant", op_circulant), ("eigh(a, b)", op_eigh_pencil), ("expm_frechet", op_expm_frechet))
 # The functions whose problems the scale changes in kind (Riccati is not homogeneous; expm_frechet's derivative
 # overflows): drawn at scale 1 only.
-UNSCALED = {"solve_continuous_are", "solve_discrete_are", "expm_frechet"}
+UNSCALED = {"solve_continuous_are", "solve_continuous_are (scaled terms)", "solve_discrete_are", "expm_frechet"}
 
 
 def case(seed, index):

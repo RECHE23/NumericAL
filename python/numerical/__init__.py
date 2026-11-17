@@ -1950,8 +1950,8 @@ def eigh(a, UPLO="L", *, b=None, method="divide_and_conquer", subset_by_index=No
     all; a matrix (and `b`), not a stack. With `eigvals_only` or a subset, `method` is checked but not used.
 
     ``scipy.linalg.eigh``'s arguments are taken too: `b` as the second positional argument (a matrix, where `UPLO` is
-    a string), `lower`, `eigvals_only`, `driver`, `type` 1 only (``a b x = λ x`` and ``b a x = λ x`` are not offered),
-    and `overwrite_a`, `overwrite_b` and `check_finite`.
+    a string), `lower`, `eigvals_only`, `driver`, `type` (2 ``a b x = λ x`` and 3 ``b a x = λ x`` by ``b = L Lᴴ`` and
+    the eigenpairs of ``Lᴴ a L``, as LAPACK's ``xsygv``), and `overwrite_a`, `overwrite_b` and `check_finite`.
 
     Args:
         a: The symmetric or Hermitian matrix, or a stack of them (``(..., n, n)``) without `b` or a subset: a Tensor
@@ -1968,7 +1968,7 @@ def eigh(a, UPLO="L", *, b=None, method="divide_and_conquer", subset_by_index=No
         eigvals_only: Return the eigenvalues alone.
         overwrite_a: Accepted for SciPy's signature; ignored.
         overwrite_b: Accepted for SciPy's signature; ignored.
-        type: SciPy's problem type: 1 only (``a x = λ b x``).
+        type: SciPy's problem type: 1 (``a x = λ b x``), 2 (``a b x = λ x``) or 3 (``b a x = λ x``).
         check_finite: Accepted for SciPy's signature; ignored (an infinite or NaN entry always raises).
         driver: SciPy's driver, as a `method`: ``"ev"`` and ``"gv"`` the implicit QL, ``"evd"`` and SciPy's others
             divide and conquer, or the subset's bisection where one is asked.
@@ -2000,6 +2000,11 @@ def eigh(a, UPLO="L", *, b=None, method="divide_and_conquer", subset_by_index=No
     del overwrite_a, overwrite_b, check_finite
     if method not in _EIGH_METHODS:
         raise ValueError(f"eigh: method {method!r} is none of {_EIGH_METHODS}")
+    if b is not None and type != 1:
+        c, factor = _pencil_of_type(a, b, upper)
+        found = eigh(c, method=method, subset_by_index=subset_by_index, subset_by_value=subset_by_value,
+                     eigvals_only=eigvals_only)
+        return found if eigvals_only else (found[0], _pencil_vectors(factor, found[1], type))
     subset = _subset("eigh", a, subset_by_index, subset_by_value)
     if subset is not None:
         pairs = (_eigh_pencil_subset(a, b, *subset, not eigvals_only, upper) if b is not None
@@ -2010,6 +2015,26 @@ def eigh(a, UPLO="L", *, b=None, method="divide_and_conquer", subset_by_index=No
     if b is not None:
         return _eigh_pencil(a, b, method, upper)
     return _eigh(a, method, upper)
+
+
+def _pencil_of_type(a, b, upper):
+    """SciPy's pencils of types 2 (``a b x = λ x``) and 3 (``b a x = λ x``) as LAPACK's ``xsygst`` reduces them:
+    ``b = L Lᴴ`` and the Hermitian ``C = Lᴴ a L``, whose eigenvalues they share; each matrix read in its triangle
+    `upper` names. ``(C, L)``."""
+    def whole(x):
+        x = _operand(x)
+        strict = triu(x, 1) if upper else tril(x, -1)
+        return (triu(x) if upper else tril(x)) + conj(swapaxes(strict, -1, -2))
+
+    factor = cholesky(whole(b))
+    c = conj(swapaxes(factor, -1, -2)) @ whole(a) @ factor
+    return (c + conj(swapaxes(c, -1, -2))) / 2, factor
+
+
+def _pencil_vectors(factor, y, type):
+    """The vectors of a pencil of type 2 or 3 from those `y` of ``Lᴴ a L``, as LAPACK's ``xsygv``: ``L⁻ᴴ y`` for 2
+    (``Xᴴ b X = I``), ``L y`` for 3 (``Xᴴ b⁻¹ X = I``)."""
+    return solve_triangular(conj(swapaxes(factor, -1, -2)), y) if type == 2 else factor @ y
 
 
 _EIGH_DRIVERS = {"ev": "tridiagonal_ql", "evd": "divide_and_conquer", "evr": "divide_and_conquer",
@@ -2028,9 +2053,9 @@ def _eigh_driver(driver, method):
 
 def _scipy_pencil(name, UPLO, b, lower, type):
     """`UPLO` and `b` from NumPy's or SciPy's arguments: a second positional argument that is not a string is
-    SciPy's `b`; `lower` names the triangle; `type` must be 1."""
-    if type != 1:
-        raise ValueError(f"{name}: type {type!r}: only type 1 (a x = λ b x) is offered")
+    SciPy's `b`; `lower` names the triangle; `type` 1, 2 or 3."""
+    if type not in (1, 2, 3):
+        raise ValueError(f"{name}: type {type!r}: 1 (a x = λ b x), 2 (a b x = λ x) or 3 (b a x = λ x)")
     if UPLO is not None and not isinstance(UPLO, str):
         if b is not None:
             raise TypeError(f"{name}: b given twice (as the second argument and by name)")
@@ -2059,7 +2084,7 @@ def eigvalsh(a, UPLO="L", *, b=None, subset_by_index=None, subset_by_value=None,
         lower: SciPy's name for the triangle: true for ``UPLO="L"``, false for ``"U"``; it overrides `UPLO`.
         overwrite_a: Accepted for SciPy's signature; ignored.
         overwrite_b: Accepted for SciPy's signature; ignored.
-        type: SciPy's problem type: 1 only (``a x = λ b x``).
+        type: SciPy's problem type: 1 (``a x = λ b x``), 2 (``a b x = λ x``) or 3 (``b a x = λ x``).
         check_finite: Accepted for SciPy's signature; ignored (an infinite or NaN entry always raises).
         driver: SciPy's driver: checked against :func:`eigh`'s names, it does not change the computation.
 
@@ -2083,6 +2108,9 @@ def eigvalsh(a, UPLO="L", *, b=None, subset_by_index=None, subset_by_value=None,
     upper = _upper("eigvalsh", UPLO)
     _eigh_driver(driver, None)
     del overwrite_a, overwrite_b, check_finite
+    if b is not None and type != 1:
+        return eigh(_pencil_of_type(a, b, upper)[0], subset_by_index=subset_by_index, subset_by_value=subset_by_value,
+                    eigvals_only=True)
     subset = _subset("eigvalsh", a, subset_by_index, subset_by_value)
     if subset is not None:
         return (_eigh_pencil_subset(a, b, *subset, False, upper) if b is not None
@@ -2993,11 +3021,17 @@ def _matrix_norm(x, ord, row, col, keepdims):
     if ord in ("nuc", 2, -2):
         moved = _permuted(x, [a for a in range(rank) if a not in (row, col)] + [row, col])
         values = svdvals(moved)
-        reduced = sum(values, axis=-1) if ord == "nuc" else (max if ord == 2 else min)(values, axis=-1)
+        if ord == "nuc":
+            reduced = sum(values, axis=-1)
+        elif ord == 2:  # NumPy 2.5's: the largest of no value 0, the smallest refused
+            reduced = max(values, axis=-1, initial=0.0)
+        else:
+            reduced = min(values, axis=-1)
     elif ord in (1, -1, _math.inf, -_math.inf):
         inner, outer = (row, col) if ord in (1, -1) else (col, row)  # column sums for 1, row sums for inf
         sums = vector_norm(x, axis=inner, ord=1)
-        reduced = (max if ord > 0 else min)(sums, axis=outer - (1 if outer > inner else 0))
+        along = outer - (1 if outer > inner else 0)
+        reduced = max(sums, axis=along, initial=0.0) if ord > 0 else min(sums, axis=along)  # NumPy 2.5's, as above
     else:
         raise ValueError(f"Invalid norm order {ord!r} for matrices")
     if keepdims:
@@ -3123,7 +3157,8 @@ def cond(x, p=None):
         except LinAlgError:
             return _math.inf
     stack = reshape(x, (-1,) + tuple(x.shape[-2:]))
-    return reshape(_read([cond(stack[i], p) for i in range(stack.shape[0])]), tuple(x.shape[:-2]))
+    real = "float32" if x.dtype in ("float32", "complex64") else "float64"  # NumPy's: the stack's real precision
+    return reshape(asarray([cond(stack[i], p) for i in range(stack.shape[0])], real), tuple(x.shape[:-2]))
 
 
 def _paired(x, y, f):

@@ -10,6 +10,10 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ### Added
 
+- **`eigh` and `eigvalsh` of the pencils of types 2 (`a b x = λ x`) and 3 (`b a x = λ x`)**, as `scipy.linalg.eigh`'s
+  `type`: `b = L Lᴴ`, the eigenpairs of `Lᴴ a L`, the vectors `L⁻ᴴ y` (`Xᴴ b X = I`) or `L y` (`Xᴴ b⁻¹ X = I`), as LAPACK's
+  `xsygv`; subsets too. They raised.
+
 - **The array API's index and keywords**: a rank-0 integer or bool Tensor is an index (`Tensor.__index__`:
   `range(t)`, `seq[t]`), as NumPy's, a float one or a vector refused; `fft.fftfreq` and `fft.rfftfreq` take `dtype`;
   `empty(shape, dtype=None)` is float64. Found by the array API's conformance suite (array-api-tests), which this
@@ -27,6 +31,22 @@ A change that can break code is listed under **Breaking** and held for a month's
   `double`), as does the C++ guide's new section on scalar types.
 
 ### Fixed
+
+- **`solve_continuous_are` without `e`** took the Schur form of the Hamiltonian unbalanced, whatever `balanced` said: the
+  double integrator with `Q = 10¹⁰ I` was wrong at 1.9·10⁻³, and 110 of 200 random equations with `Q` scaled by 10⁵ to
+  10¹⁰ failed (SciPy's 2; found by an audit). The Hamiltonian is now balanced symplectically (`T = diag(D, D⁻¹)`,
+  powers of 2), and where its answer's residual passes 64 m ε of the equation's terms (its `G = B R⁻¹ Bᴴ` formed, a
+  `B` of rank one beside a large `Q`) the balanced pencil, SciPy's, answers: the double integrator exact, none of the
+  200 failing. `fuzz/scipy_linalg.py` draws equations with `Q`, `R` and `B` scaled apart.
+
+- **`fractional_matrix_power` of a Hermitian matrix with negative eigenvalues, to a negative power**, left the
+  principal branch (0.6 relative error at `−0.5`): its Schur form's diagonal, real in exact arithmetic, came out a
+  hair below the axis and `log` took the other side of the cut. It is taken real.
+
+- **The norms of an empty matrix** (`ord` 1, 2, `inf`, `nuc`) are 0, as NumPy 2.5's, where `ord` 1 and 2 raised; the
+  negative orders over an empty axis still raise, as there.
+
+- **`cond` of a float32 or complex64 stack** answers float32, as NumPy's, where it answered float64.
 
 - **Arguments past memory or past any length are refused at once**, as NumPy and SciPy refuse them, where each held on
   for minutes or took gigabytes first (found by `fuzz/hostile.py` on an audit's seeds): `invpascal(2**64)`, `pascal`

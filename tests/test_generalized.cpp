@@ -546,6 +546,44 @@ TEST(riccati_balancing_scales_e)
   EXPECT(discrete_residual(c, numerical::detail::as_complex(y), true, false) < 1e-14);
 }
 
+// The Hamiltonian's path balanced (symplectically, T = diag(D, D⁻¹)): the double integrator with Q = 10¹⁰ I and R = 1,
+// whose X is in closed form, exact to rounding where the unbalanced Schur form left it wrong at 2·10⁻³; complex
+// alike. An index whose row and column hold nothing off the diagonal is left unscaled.
+TEST(riccati_hamiltonian_path_is_balanced)
+{
+  using M = matrix<double>;
+  const double x12   {std::sqrt(1e10)};
+  const double x22   {std::sqrt(1e10 + (2.0 * x12))};
+  const M      exact {{x12 * x22, x12}, {x12, x22}};
+  const M      x     {numerical::solve_continuous_are(M {{0.0, 1.0}, {0.0, 0.0}}, M {{0.0}, {1.0}}, M {{1e10, 0.0}, {0.0, 1e10}}, M {{1.0}})};
+  double       error {0.0};
+  for (std::size_t i {0}; i < 2; ++i) {
+    for (std::size_t j {0}; j < 2; ++j) {
+      error = std::max(error, std::abs(x(i, j) - exact(i, j)) / std::abs(exact(i, j)));
+    }
+  }
+  EXPECT(error < 1e-14);
+  const matrix<C> z {numerical::solve_continuous_are(matrix<C> {{C {}, C {1.0}}, {C {}, C {}}}, matrix<C> {{C {}}, {C {1.0}}},
+                                                     matrix<C> {{C {1e10}, C {}}, {C {}, C {1e10}}}, matrix<C> {{C {1.0}}})};
+  EXPECT(std::abs(z(0, 0) - C {exact(0, 0)}) < 1e-14 * exact(0, 0) && std::abs(z(1, 1) - C {exact(1, 1)}) < 1e-14 * exact(1, 1));
+  const M lone {numerical::solve_continuous_are(M {{-1.0, 0.0}, {0.0, -2.0}}, M {{1.0}, {0.0}}, M {{1.0, 0.0}, {0.0, 0.0}}, M {{1.0}})};
+  EXPECT(std::abs(lone(0, 0) - (std::sqrt(2.0) - 1.0)) < 1e-15 && lone(1, 1) == 0.0 && lone(0, 1) == 0.0);
+  // a B of rank one beside a Q near 10¹⁰: the Hamiltonian's G = B R⁻¹ Bᴴ, formed, leaves a residual of 2·10⁻⁷ of its
+  // terms even balanced; past 64 m ε the pencil answers, 1.1·10⁻¹⁰ (SciPy 1.18's 6.8·10⁻¹⁰; an audit's equation 88)
+  const M a {{0x1.c768a13320522p+0, -0x1.52a91a9e87aa4p+0, -0x1.0286a50dddb67p-1},
+    {0x1.93e5a8d64c006p-3, -0x1.8e5a3e53a19adp+1, -0x1.605d0233e19f2p-2},
+    {-0x1.00f0b0feaa9d7p-4, 0x1.85bd7bca6fda6p-4, 0x1.96a8aacefb827p+0}};
+  const M b {{0x1.3f01f6e0050f0p+0}, {0x1.0992fb77d27acp-1}, {0x1.15575071f2adfp+0}};
+  const M q {{0x1.3aea2815e7e10p+32, 0x1.8d47ef037af32p+32, 0x1.89a6cec7d04a2p+32},
+    {0x1.8d47ef037af32p+32, 0x1.51b6727c2661bp+34, 0x1.d57383044ef80p+34},
+    {0x1.89a6cec7d04a2p+32, 0x1.d57383044ef80p+34, 0x1.75b786c3bf2abp+35}};
+  const M               r      {{0x1.05ccde42c0fe4p+0}};
+  const M               y      {numerical::solve_continuous_are(a, b, q, r)};
+  const riccati_case<C> graded {.a = numerical::detail::as_complex(a), .b = numerical::detail::as_complex(b), .q = numerical::detail::as_complex(q),
+                                .r = numerical::detail::as_complex(r), .e = identity<C>(3), .s = matrix<C> {{C {}}, {C {}}, {C {}}}};
+  EXPECT(continuous_residual(graded, numerical::detail::as_complex(y), false, false) < 1e-9);
+}
+
 // A graded A (eigenvalues near −2.6·10⁸ and −6.2·10⁸, X near 10⁻⁹): the generalized Schur form's answer has a
 // residual of 1.3·10⁻⁷ of its terms (SciPy 1.18's 9.8·10⁻⁹, its real QZ's), one step of Newton's method brings it to
 // rounding. An exact answer (Q = 0, X = 0) is kept: the step does not lower a zero residual. An X near 2·10¹⁵⁴ (A = 10¹⁵⁴

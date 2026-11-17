@@ -2989,6 +2989,26 @@ namespace numerical {
     }
 
     /*!
+     * \brief The residual at \p x of the continuous equation without `E` (the Hamiltonian's), relative to its terms:
+     *        `‖Res(X)‖₁ / (2 ‖A‖₁ ‖X‖₁ + ‖Bᴴ X + Sᴴ‖₁ ‖R⁻¹(Bᴴ X + Sᴴ)‖₁ + ‖Q‖₁)` (\ref continuous_residual); infinite
+     *        where it is not finite.
+     */
+    [[nodiscard]] inline double continuous_backward_error(const riccati_terms&                terms,
+                                                          const matrix<std::complex<double>>& x)
+    {
+      using C = std::complex<double>;
+      matrix<C>       closed;
+      const matrix<C> residual {continuous_residual(terms, x, closed)};
+      matrix<C>       coupling {adjoint_of(terms.b) * x};
+      if (terms.s != nullptr) {
+        coupling = coupling + adjoint_of(*terms.s);
+      }
+      const double size  {(2.0 * norm_one(terms.a) * norm_one(x)) + (norm_one(coupling) * norm_one(solve(terms.r, coupling))) + norm_one(terms.q)};
+      const double error {norm_one(residual) / size};
+      return std::isfinite(error) ? error : std::numeric_limits<double>::infinity();
+    }
+
+    /*!
      * \brief One step of Newton's method on the continuous equation from the Schur method's \p x (Kleinman, 1968), in
      *        its correction form: `A_Kᴴ Δ E + Eᴴ Δ A_K = −Res(X)` for the closed loop `A_K` (\ref continuous_residual),
      *        a Lyapunov equation solved for `Y = Eᴴ Δ E` as `Fᴴ Y + Y F = −Res(X)`, `F = E⁻¹ A_K`; `X + Δ` kept only
@@ -3057,11 +3077,71 @@ namespace numerical {
     }
 
     /*!
+     * \brief The diagonal `D` of a symplectic balancing of the Hamiltonian \p h of order `2m` (row-major, in place):
+     *        `h ← T⁻¹ h T`, `T = diag(D, D⁻¹)`, powers of 2 (each scaling exact). Each `dᵢ` scales column `i` and row
+     *        `m + i` by `f` (their common entry by `f²`), row `i` and column `m + i` by `1/f` (theirs by `1/f²`): the power
+     *        of 2 whose off-diagonal sum `g₁ f + g₂ f² + s₁/f + s₂/f²` is least (a convex function of log f), taken
+     *        where it lowers the sum by a twentieth, swept until none does: each step lowers the matrix's off-diagonal
+     *        sum, so the sweeps end.
+     */
+    template <typename T>
+    [[nodiscard]] buffer<double> balance_hamiltonian(buffer<T>&  h,
+                                                     std::size_t m)
+    {
+      const std::size_t order {2 * m};
+      buffer<double>    d(m, 1.0);
+      const auto        at {[&h, order](std::size_t i, std::size_t j) { return std::abs(h[(i * order) + j]); }};
+      for (bool moved {true}; moved;) {
+        moved = false;
+        for (std::size_t i {0}; i < m; ++i) {
+          const std::size_t pair         {m + i};
+          double            grown        {0.0}; // column i and row m + i, but their common entry
+          double            shrunk       {0.0}; // row i and column m + i, but theirs
+          const double      grown_twice  {at(pair, i)};
+          const double      shrunk_twice {at(i, pair)};
+          for (std::size_t k {0}; k < order; ++k) {
+            if (k != i && k != pair) {
+              grown  += at(k, i) + at(pair, k);
+              shrunk += at(i, k) + at(k, pair);
+            }
+          }
+          if (!(std::min(grown + grown_twice, shrunk + shrunk_twice) > 0.0)) {
+            continue; // a side with nothing: no power of 2 is least
+          }
+          const auto sum {[grown, grown_twice, shrunk, shrunk_twice](double f) { return (grown * f) + (grown_twice * f * f) + (shrunk / f) + (shrunk_twice / (f * f)); }};
+          double     f {1.0};
+          while (sum(2.0 * f) < sum(f)) {
+            f *= 2.0;
+          }
+          while (sum(0.5 * f) < sum(f)) {
+            f *= 0.5;
+          }
+          if (!(sum(f) < 0.95 * sum(1.0))) {
+            continue;
+          }
+          for (std::size_t k {0}; k < order; ++k) {
+            h[(i * order) + k]    /= f;
+            h[(pair * order) + k] *= f;
+          }
+          for (std::size_t k {0}; k < order; ++k) {
+            h[(k * order) + i]    *= f;
+            h[(k * order) + pair] /= f;
+          }
+          d[i] *= f;
+          moved = true;
+        }
+      }
+      return d;
+    }
+
+    /*!
      * \brief The stabilising solution of the continuous equation without `E` from the Schur form of the Hamiltonian
      *        `H = [[Ã, −G], [−Q̃, −Ãᴴ]]` (Laub, 1979), `G = B R⁻¹ Bᴴ`, `Ã = A − B R⁻¹ Sᴴ` and `Q̃ = Q − S R⁻¹ Sᴴ` in the
      *        arithmetic of \p T (a real `H`'s real Schur form): its eigenvalues in the left half-plane moved first,
      *        `X = U₂₁ U₁₁⁻¹` from their `m` Schur vectors, made Hermitian. A Schur form of order `2m` by multishift QR
-     *        where the pencil's QZ takes order `2m + n`.
+     *        where the pencil's QZ takes order `2m + n`. Where \p balanced, `H` is first `T⁻¹ H T`, `T = diag(D, D⁻¹)`
+     *        (\ref balance_hamiltonian), still Hamiltonian, and `X = D⁻¹ X̃ D⁻¹`: a `Q` of 10¹⁰ beside a `G` of 1 left the
+     *        unbalanced form's `X` wrong at 10⁻³.
      * \throws singular_matrix_error If `U₁₁` is numerically singular (\ref stabilising_solution).
      * \throws convergence_error     If the left half-plane holds other than `m` eigenvalues, or as
      *                               \ref stabilising_solution says (eigenvalues on or too close to the imaginary axis).
@@ -3071,7 +3151,8 @@ namespace numerical {
                                                 const matrix<T>& b,
                                                 const matrix<T>& q,
                                                 const matrix<T>& r,
-                                                const matrix<T>* s)
+                                                const matrix<T>* s,
+                                                bool             balanced)
     {
       const std::size_t m      {a.rows()};
       const matrix<T>   g      {b * solve(r, adjoint_of(b))};
@@ -3092,6 +3173,7 @@ namespace numerical {
           h[((m + i) * order) + m + j] = -conj_of(shift(j, i));
         }
       }
+      const buffer<double>                    d      {balanced ? balance_hamiltonian(h, m) : buffer<double>(m, 1.0)};
       schur_decomposition<T>                  form   {matrix<T> {order, order, std::move(h)}};
       const std::vector<std::complex<double>> values {form.values()};
       std::vector<bool>                       chosen(order);
@@ -3113,7 +3195,7 @@ namespace numerical {
       buffer<T>       out(m * m);
       for (std::size_t i {0}; i < m; ++i) {
         for (std::size_t k {0}; k < m; ++k) {
-          out[(i * m) + k] = (x(i, k) + conj_of(x(k, i))) / 2.0;
+          out[(i * m) + k] = (x(i, k) + conj_of(x(k, i))) / (2.0 * d[i] * d[k]); // D⁻¹ X̃ D⁻¹, exact
         }
       }
       return matrix<T> {m, m, std::move(out)};
@@ -3176,16 +3258,21 @@ namespace numerical {
       if (s != nullptr) {
         cs.emplace(as_complex(*s));
       }
-      const riccati_terms          terms {ca, cb, cq, cr, ce ? &*ce : nullptr, cs ? &*cs : nullptr};
+      const riccati_terms terms {ca, cb, cq, cr, ce ? &*ce : nullptr, cs ? &*cs : nullptr};
       // a real equation's pencil in real arithmetic, real_generalized_schur's double shifts, as SciPy's dgges
-      matrix<std::complex<double>> x     {hamiltonian ? as_complex(hamiltonian_riccati(a, b, q, r, s))
-                                                      : as_complex(riccati(riccati_operands<T> {a, b, q, r, e, s}, continuous, balanced))};
-      // the discrete equation takes no step of Newton's (Hewer's): its residual, rounded at ε ‖A‖² ‖X‖ where the
-      // continuous one is at ε ‖A‖ ‖X‖, steers the step away from X wherever A is large or graded
-      if (continuous) {
-        x = newton_refined(terms, std::move(x));
+      if (!continuous) { // no step of Newton's (Hewer's): its residual, rounded at ε ‖A‖² ‖X‖ where the continuous one
+                         // is at ε ‖A‖ ‖X‖, steers the step away from X wherever A is large or graded
+        return answer_like(matrix<std::complex<double>> {as_complex(riccati(riccati_operands<T> {a, b, q, r, e, s}, false, balanced))}, a);
       }
-      return answer_like(std::move(x), a);
+      // the Hamiltonian's G = B R⁻¹ Bᴴ, formed, loses what the pencil keeps (a Q of 10⁹ beside a B of rank one, its
+      // residual at 10⁻⁵ where the pencil's is at 10⁻⁹): past 64 m ε of its terms, the pencil's answer instead
+      if (hamiltonian) {
+        matrix<std::complex<double>> fast {newton_refined(terms, matrix<std::complex<double>> {as_complex(hamiltonian_riccati(a, b, q, r, s, balanced))})};
+        if (continuous_backward_error(terms, fast) <= 64.0 * static_cast<double>(m) * std::numeric_limits<double>::epsilon()) {
+          return answer_like(std::move(fast), a);
+        }
+      }
+      return answer_like(newton_refined(terms, matrix<std::complex<double>> {as_complex(riccati(riccati_operands<T> {a, b, q, r, e, s}, true, balanced))}), a);
     }
   } // namespace detail
 

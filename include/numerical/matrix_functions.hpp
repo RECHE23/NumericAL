@@ -3168,7 +3168,8 @@ namespace numerical {
     }
 
     //! \brief `A^t` (`−1 < t < 1`) by the Schur form, as SciPy's `_remainder_matrix_power`: an upper triangular `A`
-    //!        directly, else `Z T^t Zᴴ`; none where the triangular form has a zero on its diagonal.
+    //!        directly, else `Z T^t Zᴴ`; none where the triangular form has a zero on its diagonal. An exactly Hermitian
+    //!        `A`'s diagonal is taken real, so that a negative eigenvalue's power is the principal value's.
     template <typename T>
     [[nodiscard]] std::optional<matrix<std::complex<double>>> remainder_power(const matrix<T>& a,
                                                                               double           t)
@@ -3184,12 +3185,17 @@ namespace numerical {
       else {
         std::tie(form, z) = function_schur_form(a);
       }
+      const bool hermitian {exactly_hermitian(a)};
+      buffer<C>  triangle(form.begin(), form.end());
       for (std::size_t i {0}; i < n; ++i) {
-        if (form(i, i) == C {}) {
+        if (triangle[(i * n) + i] == C {}) {
           return std::nullopt;
         }
+        if (hermitian) { // its eigenvalues real: a negative one's rounding below the axis took the other branch
+          triangle[(i * n) + i] = C {triangle[(i * n) + i].real(), 0.0};
+        }
       }
-      matrix<C> u {n, n, triangular_power(buffer<C>(form.begin(), form.end()), n, t)};
+      matrix<C> u {n, n, triangular_power(triangle, n, t)};
       if (triangular) {
         return u;
       }

@@ -42,7 +42,7 @@ class ScipyArguments(unittest.TestCase):
                                            sl.eigh(a, driver=driver)[0], rtol=1e-12)
                 np.testing.assert_allclose(np.asarray(numerical.eigvalsh(a, driver=driver)), sl.eigvalsh(a, driver=driver), rtol=1e-12)
         with self.assertRaises(ValueError):
-            numerical.eigh(a, b, type=2)
+            numerical.eigh(a, b, type=4)  # types 1 to 3 only
         with self.assertRaises(ValueError):
             numerical.eigvalsh(a, driver="other")
         with self.assertRaises(TypeError):
