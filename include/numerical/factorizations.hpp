@@ -402,6 +402,20 @@ namespace numerical {
       return std::ldexp(x, e);
     }
 
+    //! \brief The magnitude of a real \p x, \p x's exponent read from it.
+    template <std::floating_point R>
+    [[nodiscard]] R part_size(R x)
+    {
+      return std::abs(x);
+    }
+
+    //! \brief The larger magnitude of a complex \p x's parts: no sum of them, which overflows near the largest double.
+    template <std::floating_point U>
+    [[nodiscard]] U part_size(const std::complex<U>& x)
+    {
+      return std::max(std::abs(x.real()), std::abs(x.imag()));
+    }
+
     //! \brief \ref times_power_of_two of each part of a complex \p x.
     template <std::floating_point U>
     [[nodiscard]] std::complex<U> times_power_of_two(const std::complex<U>& x,
@@ -412,8 +426,8 @@ namespace numerical {
 
     /*!
      * \brief The product of \p count factors, `factor(i)` for each `i`, times \p start, as a determinant multiplies its
-     *        pivots: after each factor the running product is brought to near 1 by a power of 2 (exactly) and the power
-     *        kept apart, then applied once at the end. The same bits as the plain product wherever that stays normal;
+     *        pivots: each factor, and the running product after it, brought near 1 by a power of 2 (exactly) and the
+     *        powers kept apart, then applied once at the end. The same bits as the plain product wherever that stays normal;
      *        where a partial product would overflow or underflow (pivots of 10¹⁵⁰ and 10⁻¹⁵⁰), the representable answer.
      */
     template <typename T,
@@ -422,14 +436,20 @@ namespace numerical {
                                    std::size_t   count,
                                    const Factor& factor)
     {
-      using R = magnitude_t<T>;
       T   value    {start};
       int exponent {0};
       for (std::size_t i {0}; i < count; ++i) {
-        value *= factor(i);
+        // the factor brought near 1 first, exactly: a subnormal pivot times a value near 1 would round on the
+        // subnormals' coarse grid
+        int        own {0};
+        const auto f   {factor(i)};
+        static_cast<void>(std::frexp(part_size(f), &own));
+        value    *= times_power_of_two(f, -own);
+        exponent += own;
         int part {0};
-        static_cast<void>(std::frexp(pivot_magnitude(value), &part)); // 0 for a zero product
-        value     = value * std::ldexp(R {1}, -part);
+        static_cast<void>(std::frexp(part_size(value), &part)); // 0 for a zero product
+        // the value scaled itself, exactly: 2⁻ᵖᵃʳᵗ of a subnormal product (a pivot of 10⁻³¹⁰) is past the doubles
+        value     = times_power_of_two(value, -part);
         exponent += part;
       }
       return times_power_of_two(value, exponent);

@@ -63,6 +63,9 @@ A change that can break code is listed under **Breaking** and held for a month's
   (27 of 600 drawn matrices; found by a probe of the small orders). It is now kept near 1 by powers of 2, exactly, the
   power applied once at the end: the same bits wherever the plain product stays normal, NumPy's value (its `slogdet`
   route) elsewhere. A Cholesky factor's determinant likewise, each diagonal entry multiplied twice, not its square.
+  Each factor is brought near 1 too, and each part's larger magnitude measured, not their sum: a subnormal pivot
+  (`det(diag(1e-310, 1e300))`) gave ∞, and parts near the largest double overflowed their sum (found by an audit);
+  that determinant is now exact, `1e-10` to the last digit, where NumPy's is off by 2·10⁻¹⁴.
 
 - **`solve_continuous_are` without `e`** took the Schur form of the Hamiltonian unbalanced, whatever `balanced` said: the
   double integrator with `Q = 10¹⁰ I` was wrong at 1.9·10⁻³, and 110 of 200 random equations with `Q` scaled by 10⁵ to

@@ -249,8 +249,16 @@ TEST(a_determinant_whose_partial_products_pass_the_doubles_is_exact)
   EXPECT(lu_decomposition<float> {f}.determinant() == std::ldexp(1.0F, -10));
   const matrix<double> spd   {{std::ldexp(1.0, 1000), 0.0, 0.0}, {0.0, std::ldexp(1.0, 1000), 0.0}, {0.0, 0.0, std::ldexp(1.0, -1022)}};
   EXPECT(cholesky_decomposition<double> {spd}.determinant() == std::ldexp(1.0, 978));
-  const matrix<double> plain {{3.0, 1.0, 0.5}, {1.0, 2.0, 0.25}, {0.5, 0.25, 4.0}};
-  const auto           lu    {lu_decomposition<double> {plain}};
+  // a subnormal pivot (its product then subnormal, scaled up by 2¹⁰⁶⁰ exactly, not by a 2¹⁰⁶⁰ that overflows), parts
+  // near the largest double (their larger one measured, not their sum, which overflows), a subnormal float
+  const matrix<double> subnormal {{std::ldexp(1.0, -1060), 0.0}, {0.0, std::ldexp(1.0, 1000)}};
+  EXPECT(lu_decomposition<double> {subnormal}.determinant() == std::ldexp(1.0, -60));
+  const matrix<C> near_largest   {{C {std::ldexp(1.0, 1023), std::ldexp(1.0, 1023)}, C {}}, {C {}, C {1.0}}};
+  EXPECT(lu_decomposition<C> {near_largest}.determinant() == (C {std::ldexp(1.0, 1023), std::ldexp(1.0, 1023)}));
+  const matrix<float> small      {{std::ldexp(1.0F, -140), 0.0F}, {0.0F, std::ldexp(1.0F, 100)}};
+  EXPECT(lu_decomposition<float> {small}.determinant() == std::ldexp(1.0F, -40));
+  const matrix<double> plain     {{3.0, 1.0, 0.5}, {1.0, 2.0, 0.25}, {0.5, 0.25, 4.0}};
+  const auto           lu        {lu_decomposition<double> {plain}};
   EXPECT(lu.determinant() == determinant(plain));
 }
 
