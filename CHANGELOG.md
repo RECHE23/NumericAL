@@ -348,6 +348,17 @@ A change that can break code is listed under **Breaking** and held for a month's
   `T^t` too where its eigenvalues are positive. The same errors against 50 digits (the eigenvalues alone erred two to
   five times more). On an M1, order 200 35 → 3.7 ms real, 54 → 10.6 ms complex.
 
+### Added
+
+- **`asarray` reads what NumPy reads**: a `range`, a buffer (`array.array`, a `memoryview`, a `bytearray`, its integers as
+  int64), an object with `__array__` (pandas, xarray, torch on the CPU) and a list of NumPy arrays, stacked as a list
+  of Tensors is; each was refused (found by an audit).
+
+### Fixed
+
+- **`nanmax` and `nanmin` of a NumPy bool array** answer bools, and the other NaN reductions NumPy's dtypes, where the
+  array was read as numbers first (int64 extremes).
+
 ## 2026.11.17 — 2026-11-17
 
 ### Added
@@ -360,10 +371,6 @@ A change that can break code is listed under **Breaking** and held for a month's
 - **`eigh` and `eigvalsh` of the pencils of types 2 (`a b x = λ x`) and 3 (`b a x = λ x`)**, as `scipy.linalg.eigh`'s
   `type`: `b = L Lᴴ`, the eigenpairs of `Lᴴ a L`, the vectors `L⁻ᴴ y` (`Xᴴ b X = I`) or `L y` (`Xᴴ b⁻¹ X = I`), as LAPACK's
   `xsygv`; subsets too. They raised.
-
-- **`asarray` reads what NumPy reads**: a `range`, a buffer (`array.array`, a `memoryview`, a `bytearray`, its integers as
-  int64), an object with `__array__` (pandas, xarray, torch on the CPU) and a list of NumPy arrays, stacked as a list
-  of Tensors is; each was refused (found by an audit).
 
 - **The array API's index and keywords**: a rank-0 integer or bool Tensor is an index (`Tensor.__index__`:
   `range(t)`, `seq[t]`), as NumPy's, a float one or a vector refused; `fft.fftfreq` and `fft.rfftfreq` take `dtype`;
@@ -412,9 +419,6 @@ A change that can break code is listed under **Breaking** and held for a month's
   Each factor is brought near 1 too, and each part's larger magnitude measured, not their sum: a subnormal pivot
   (`det(diag(1e-310, 1e300))`) gave ∞, and parts near the largest double overflowed their sum (found by an audit);
   that determinant is now exact, `1e-10` to the last digit, where NumPy's is off by 2·10⁻¹⁴.
-
-- **`nanmax` and `nanmin` of a NumPy bool array** answer bools, and the other NaN reductions NumPy's dtypes, where the
-  array was read as numbers first (int64 extremes).
 
 - **`solve_continuous_are` without `e`** took the Schur form of the Hamiltonian unbalanced, whatever `balanced` said: the
   double integrator with `Q = 10¹⁰ I` was wrong at 1.9·10⁻³, and 110 of 200 random equations with `Q` scaled by 10⁵ to
