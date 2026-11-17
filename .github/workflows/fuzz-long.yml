@@ -89,6 +89,18 @@ jobs:
             seed=$(od -An -N4 -tu4 /dev/urandom | tr -d ' ')
             python fuzz/matfuncs.py --seed "$seed" --cases 100
           done
+      # Matrices scaled to 10^±150 and each fast path against its general one (fuzz/scaled.py: det past the doubles
+      # midway, eig's balancing near the subnormals, a non-normal pencil's vectors), a fresh seed each campaign; a tenth
+      # of the time.
+      - name: Fuzz scaled matrices and fast paths
+        env:
+          PYTHONPATH: python
+        run: |
+          end=$(( $(date +%s) + FUZZ_TIME / 10 ))
+          while [ "$(date +%s)" -lt "$end" ]; do
+            seed=$(od -An -N4 -tu4 /dev/urandom | tr -d ' ')
+            python fuzz/scaled.py --seed "$seed" --cases 300
+          done
       # The edge values first (fuzz/edges.py: element-wise operations and reductions on signed zeros, infinities,
       # NaNs, values near overflow, empty and long axes), a fresh seed, then its large shapes; a tenth of the time.
       - name: Fuzz edge values against NumPy

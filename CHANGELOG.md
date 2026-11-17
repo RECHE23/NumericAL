@@ -10,6 +10,11 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ### Added
 
+- **`fuzz/scaled.py`** (`make fuzz-scaled`, and a tenth of the weekly long fuzzing): matrices scaled to 10^±150 and each
+  fast path against its general one, the probes that found `det` overflowing, `eig`'s endless balancing and `eig(a,
+  b)`'s non-finite vectors; every call watched (a call that never ends ends the run with its traceback). On the build
+  before those fixes it reports 44 failures in 300 cases.
+
 - **`eigh` and `eigvalsh` of the pencils of types 2 (`a b x = λ x`) and 3 (`b a x = λ x`)**, as `scipy.linalg.eigh`'s
   `type`: `b = L Lᴴ`, the eigenpairs of `Lᴴ a L`, the vectors `L⁻ᴴ y` (`Xᴴ b X = I`) or `L y` (`Xᴴ b⁻¹ X = I`), as LAPACK's
   `xsygv`; subsets too. They raised.

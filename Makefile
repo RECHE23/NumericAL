@@ -36,7 +36,7 @@ SCIFORGE_INCLUDE ?= ../sciforge/include
 SCIFORGE_LINT ?= ../sciforge/lint
 FORMAT_FILES := $(shell find include tests blas -name '*.hpp' -o -name '*.cpp')
 
-.PHONY: gallery-long fuzz-matfuncs fuzz-hostile headers-alone always actionlint check-pins ci-arm-gcc all build test sanitize tsan coverage coverage-build coverage-x86 coverage-html \
+.PHONY: gallery-long fuzz-matfuncs fuzz-hostile fuzz-scaled headers-alone always actionlint check-pins ci-arm-gcc all build test sanitize tsan coverage coverage-build coverage-x86 coverage-html \
         lint misra doc doc-no-coverage docs-venv doc-xml docs-site docs-site-gate format format-check full-local-gate test-gcc test-gcc-neon lint-gate stubtest-gate bench-diff-selftest \
         python python-test python-sanitize python-stubtest fuzz-linalg fuzz-edges fuzz-fft fuzz-numpy fuzz-numpy-push fuzz-scipy bench-diff bench-linalg bench-python bench-fuzz bench-gemm version-check install uninstall release release-bump clean help
 
@@ -63,6 +63,7 @@ help:
 	@echo "  make fuzz-linalg  Decompositions vs NumPy on adversarial matrices, every GEMM path (CASES=, SEED=)"
 	@echo "  make fuzz-edges   Element-wise ops and reductions vs NumPy on zeros, infinities, NaNs, empty axes (CASES=, SEED=)"
 	@echo "  make fuzz-fft     Fourier transforms vs NumPy over drawn lengths, axes, dtypes and scalings, every path (CASES=, SEED=)"
+	@echo "  make fuzz-scaled  Matrices scaled to 1e±150, and each fast path against its general one (CASES=, SEED=)"
 	@echo "  make fuzz-numpy   Sorting, sets, statistics, histograms, polynomials, shapes… vs NumPy on drawn inputs (CASES=, SEED=)"
 	@echo "  make version-check  Assert pyproject = __init__ = CMake-derived version"
 	@echo "  make check-commit  Before each commit: format, the suite under coverage at 100 % (~2 min)"
@@ -313,6 +314,10 @@ fuzz-matfuncs: python
 # Hostile arguments through the whole public namespace (fuzz/hostile.py): CASES calls (default 5000) from SEED.
 fuzz-hostile: python
 	$(PYRUN) fuzz/hostile.py --cases $(or $(CASES),5000) $(if $(SEED),--seed $(SEED),)
+
+# Matrices scaled to 10^±150 and fast paths against their general ones (fuzz/scaled.py): CASES (default 300) from SEED.
+fuzz-scaled: python
+	$(PYRUN) fuzz/scaled.py --cases $(or $(CASES),300) $(if $(SEED),--seed $(SEED),)
 
 # The gallery of hard matrices (python/tests/test_gallery.py) at orders past each algorithm's thresholds (150 to 256):
 # a minute, run weekly by the long fuzzing; the suite's own pass stops below them.
