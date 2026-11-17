@@ -3623,9 +3623,25 @@ def asarray(a, dtype=None, order=None, *, device=None, copy=None, like=None):
         fast = _asarray_nested(a, dtype) if dtype is not None else _asarray_nested(a)
         if fast is not None:
             return fast
-        if a and _builtins.any(isinstance(item, Tensor) for item in a):  # rank-0 Tensors among them (t[0], t.sum()):
-            stacked = stack([asarray(item) for item in a])  # their dtypes promoted, as NumPy's scalars in a list
+        if a and _builtins.any(isinstance(item, Tensor) or hasattr(item, "__array_struct__") for item in a):
+            # Tensors (rank-0 ones: t[0], t.sum()) or NumPy arrays among them: stacked, their dtypes promoted, as NumPy's
+            stacked = stack([asarray(item) for item in a])
             return stacked if dtype is None else asarray(stacked, dtype)
+    if type(a) is range:  # NumPy's: its integers
+        return asarray(list(a), dtype)
+    if not isinstance(a, (Tensor, str, bytes, list, tuple)) and type(a) not in _NATIVE_NUMBERS \
+            and not hasattr(a, "__array_interface__"):
+        if hasattr(a, "__array__"):  # pandas, xarray, torch on the CPU…: the array it hands NumPy
+            return asarray(a.__array__(), dtype)
+        try:
+            view = memoryview(a)  # array.array, a memoryview, a bytearray: the buffer's elements
+        except TypeError:
+            view = None
+        if view is not None:
+            kind = _BUFFER_KINDS.get(view.format.lstrip("@=<>!"))
+            if kind is None:
+                raise _UnreadableError(f"asarray: a buffer of format {view.format!r} is not read here")
+            return asarray(view.tolist(), kind if dtype is None else dtype)
     if isinstance(a, (list, tuple)) or (type(a) not in _NATIVE_NUMBERS and isinstance(a, _numbers.Number)
                                           and not hasattr(a, "__array_interface__")):
         values, shape = _nested(a)
@@ -3641,6 +3657,12 @@ def asarray(a, dtype=None, order=None, *, device=None, copy=None, like=None):
         raise _UnreadableError(f"asarray: a {type(a).__name__} is not a tensor, an array, a nested list of numbers "
                                "or a number")
     return _asarray(a, dtype) if dtype is not None else _asarray(a)
+
+
+# A buffer's struct formats as dtypes: its integers as Python's are read (int64), half precision as float64 (no float16
+# here)
+_BUFFER_KINDS = {**{code: "int64" for code in "bBhHiIlLqQnN"}, "f": "float32", "d": "float64", "e": "float64",
+                 "?": "bool"}
 
 
 def _read(obj, dtype=None):
