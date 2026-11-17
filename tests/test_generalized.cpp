@@ -8,6 +8,7 @@
 #include <complex>
 #include <cstddef>
 #include <limits>
+#include <random>
 #include <stdexcept>
 #include <vector>
 
@@ -398,6 +399,53 @@ TEST(generalized_eigenvectors_solve_the_pencil)
 }
 
 // The refusals of the decomposition.
+// A non-normal triangular pencil (B = I, a strict part of 10⁶, order 80): the substitution's components grow past the
+// doubles; brought near 1 by powers of 2 as they pass 2²⁵⁶ (ztgevc's guard), every vector finite and solving the pencil,
+// left and right, where 9 of 80 came out ∞ and NaN.
+TEST(generalized_eigenvectors_of_a_non_normal_pencil_are_finite)
+{
+  // NOLINTNEXTLINE(cert-msc51-cpp,cert-msc32-c,bugprone-random-generator-seed)
+  std::mt19937_64                  g {0};
+  std::normal_distribution<double> d;
+  const std::size_t                n {80};
+  matrix<C>                        a {identity<C>(n)};
+  std::vector<C>                   entries(n * n);
+  for (std::size_t i {0}; i < n; ++i) {
+    for (std::size_t j {0}; j < n; ++j) {
+      if (i == j) {
+        entries[(i * n) + j] = C {static_cast<double>(i + 1)};
+      }
+      else if (j > i) {
+        entries[(i * n) + j] = C {d(g) * 1e6, d(g) * 1e6};
+      }
+    }
+  }
+  a = matrix<C> {n, n, entries};
+  const numerical::generalized_schur pencil {a, identity<C>(n)};
+  for (const bool left : {false, true}) {
+    const matrix<C> v      {numerical::generalized_eigenvectors(pencil, left)};
+    bool            finite {true};
+    for (const C& z : v) {
+      finite = finite && std::isfinite(z.real()) && std::isfinite(z.imag());
+    }
+    EXPECT(finite);
+    double worst {0.0};
+    for (std::size_t k {0}; k < n; ++k) {
+      const auto [alpha, beta] {pencil.values()[k]};
+      for (std::size_t i {0}; i < n; ++i) { // (β A − α B) v = 0 on the right, vᴴ (β A − α B) = 0 on the left
+        C sum {};
+        for (std::size_t j {0}; j < n; ++j) {
+          const C unit {i == j ? C {1.0} : C {}}; // B = I
+          const C m    {left ? std::conj((beta * a(j, i)) - (alpha * unit)) : (beta * a(i, j)) - (alpha * unit)};
+          sum += m * v(j, k);
+        }
+        worst = std::max(worst, std::abs(sum) / 1e6);
+      }
+    }
+    EXPECT(worst < 1e-12);
+  }
+}
+
 TEST(generalized_schur_refuses_what_it_cannot_take)
 {
   EXPECT_THROWS(static_cast<void>(numerical::generalized_schur(matrix<C> {{C {1.0}, C {2.0}}}, identity<C>(1))), numerical::dimension_error);

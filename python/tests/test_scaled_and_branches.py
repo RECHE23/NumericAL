@@ -82,6 +82,26 @@ class ScaledAndBranches(unittest.TestCase):
             if want != 0 and np.isfinite(want):
                 self.assertLessEqual(abs(got - want), 1e-10 * abs(want))
 
+    def test_the_vectors_of_a_non_normal_pencil_are_finite(self):
+        rng = np.random.default_rng(0)
+        for n, strict in ((80, 1e6), (50, 1e8), (200, 1e4)):
+            t = np.triu(rng.standard_normal((n, n)), 1) * strict + np.diag(np.arange(1.0, n + 1))
+            for left in (False, True):
+                w, v = (np.asarray(part) for part in numerical.eig(t, np.eye(n), left=left, right=not left))
+                self.assertTrue(np.isfinite(v).all())
+                residual = t.conj().T @ v - v * np.conj(w) if left else t @ v - v * w
+                self.assertLess(np.abs(residual).max(), 1e-8 * np.abs(t).max())
+
+    def test_the_diagonal_solve_and_sinhm_refuse_what_is_not_finite(self):
+        with self.assertRaises(numerical.LinAlgError):
+            numerical.solve(np.diag([1.0, np.inf, 3.0]), np.ones(3), assume_a="diagonal")
+        with self.assertRaises(numerical.LinAlgError):
+            numerical.solve(np.diag([1.0, 2.0, 3.0]), np.array([1.0, np.nan, 1.0]), assume_a="diagonal")
+        with self.assertRaises(numerical.LinAlgError):
+            numerical.sinhm(np.array([[1.0, np.nan], [0.0, 1.0]]))
+        np.testing.assert_allclose(np.asarray(numerical.solve(np.diag([2.0, 4.0]), np.ones(2), assume_a="diagonal")),
+                                   [0.5, 0.25])
+
     def test_the_pencils_of_types_2_and_3_are_scipys(self):
         try:
             import scipy.linalg as sl

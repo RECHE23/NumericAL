@@ -1132,6 +1132,10 @@ def _structured_solve(a, b, structure, lower, level):
         return _conditioned(x, _factor_condition(factor.c, a, 0, bool(lower)), a.dtype, level + 1)
     if structure == "diagonal":
         d = diagonal(a)
+        if not all(isfinite(a)):  # as every other route refuses it (a diagonal of 1, ∞, 3 answered 1, 0, 1/3)
+            raise LinAlgError("solve: the matrix holds an infinite or NaN entry")
+        if not all(isfinite(b)):
+            raise LinAlgError("solve: the right-hand side holds an infinite or NaN entry")
         if not all(d != 0.0):
             raise LinAlgError("solve: a singular matrix (a zero on the diagonal)")
         moduli = absolute(d)
@@ -5152,7 +5156,7 @@ def coshm(A):
 def _sinh_series(A):
     """``sinh(A)`` by its series ``A + A³/3! + A⁵/5! + …`` where ``‖A‖₁ ≤ 1``, else None: the terms fall at least by
     ``1/((2k)(2k+1))`` and nothing cancels, where ``(e^A − e^{−A})/2`` loses what ``1/‖A‖`` costs (norm 10⁻⁹: 8 digits)."""
-    if A.shape[0] == 0 or float(max(sum(absolute(A), axis=0))) > 1.0:
+    if A.shape[0] == 0 or not float(max(sum(absolute(A), axis=0))) <= 1.0:  # a NaN's norm too: expm refuses it
         return None
     square = A @ A
     term = A

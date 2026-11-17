@@ -2353,6 +2353,19 @@ namespace numerical {
                                             const C m {entry(i, i)};
                                             return std::abs(m) < smallest ? C {smallest} : m;
                                           };
+                     // ztgevc's guard against overflow: past 2²⁵⁶ the entries found so far (rows first … last) are brought
+                     // near 1 by a power of 2, exactly, which the unit norm at the end takes back out (a non-normal
+                     // pencil's components grew past the doubles, and its vectors came out ∞ and NaN). Kept below 2²⁵⁷, an
+                     // entry over its pivot (at least ε (|β| ‖S‖ + |α| ‖T‖), of the entries' scale) stays below n 2³⁰⁹
+                     const auto contained = [x, n](std::size_t at, std::size_t first, std::size_t last) {
+                                              const double size {std::max(std::abs(x[at * n].real()), std::abs(x[at * n].imag()))};
+                                              if (size > 0x1p256) {
+                                                const double down {std::ldexp(1.0, -std::ilogb(size))};
+                                                for (std::size_t r {first}; r <= last; ++r) {
+                                                  x[r * n] *= down;
+                                                }
+                                              }
+                                            };
                      if (!left) { // rows k − 1 … 0 of the upper triangular system
                        for (std::size_t i {k}; i-- > 0;) {
                          C sum {};
@@ -2360,6 +2373,7 @@ namespace numerical {
                            sum += entry(i, j) * x[j * n];
                          }
                          x[i * n] = -sum / pivot(i);
+                         contained(i, i, k);
                        }
                      }
                      else { // yᴴ M = 0: (Mᴴ y)_i = 0 for i > k, Mᴴ lower triangular
@@ -2369,6 +2383,7 @@ namespace numerical {
                            sum += std::conj(entry(j, i)) * x[j * n];
                          }
                          x[i * n] = -sum / std::conj(pivot(i));
+                         contained(i, k, i);
                        }
                      }
                    });

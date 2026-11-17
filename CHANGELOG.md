@@ -32,6 +32,16 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ### Fixed
 
+- **`eig(a, b)` of a strongly non-normal pencil** gave whole eigenvectors of ∞ and NaN, silently (an upper triangular
+  `a` with a strict part of 10⁶ and order 80, `b = I`: 9 of 80; 43 of 200 at 10⁴), where `eig(a)`, `qz` and SciPy are
+  finite (found by an audit): the back substitution grew past the doubles. As LAPACK's `ztgevc`, the components found
+  so far are brought near 1 by a power of 2 once one passes 2²⁵⁶, exactly, and the unit norm takes it back out: the
+  same bits wherever nothing passed it.
+
+- **`solve(..., assume_a="diagonal")`** answered past an infinite or NaN entry (`diag(1, ∞, 3)` gave `[1, 0, 1/3]`), and
+  **`sinhm`** gave NaN for a matrix holding one, where every other route refuses it with `LinAlgError`; they refuse
+  it too.
+
 - **`eig` and `eigvals` of a matrix whose entries span 10±150 never returned** (2 of 1 000 drawn; NumPy answers): the
   matrix divided by its largest power of 2 put a row near the subnormals, whose balancing doubled `f` and halved it back
   to 1 while its sums fell to 0, read that as a gain, and swept again forever. A step back at `f = 1` counts as none;
