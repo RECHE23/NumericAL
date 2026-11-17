@@ -37,8 +37,8 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ### Fixed
 
-- **A transform's `n` past the largest index** (`sys.maxsize`) raises NumPy's `ValueError`, where a 32-bit build (the
-  Windows wheel) raised `TypeError: int out of range` from its native call; the tests of past-memory arguments read
+- **A transform's `n` past the largest index** (`sys.maxsize`), and `fftfreq`'s and `rfftfreq`'s, raises NumPy's
+  `ValueError`, where a 32-bit build (the Windows wheel) raised `TypeError: int out of range` from its native call; the tests of past-memory arguments read
   NumPy's integers as int64 there, as `fuzz/npdiff.py` does. `fuzz/npdiff.py` takes either zero sign where a quantile
   or a percentile lands among equal zeros (NumPy's introselect leaves their order), and where `maximum` or `minimum`
   meets an int 0 beside `-0.0` on x86-64.

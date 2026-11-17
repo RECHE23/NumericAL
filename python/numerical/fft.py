@@ -278,6 +278,7 @@ def fftfreq(n, d=1.0, device=None, *, dtype=None):
     step = 1.0 / (n * d)
     if n < 0:
         raise ValueError("negative dimensions are not allowed")
+    _addressable(n)
     half = (n - 1) // 2 + 1
     values = asarray(_numerical_root.concatenate([_numerical_root.arange(half), _numerical_root.arange(-(n // 2), 0)]),
                      "float64") * step
@@ -291,6 +292,7 @@ def rfftfreq(n, d=1.0, device=None, *, dtype=None):
         raise ValueError(f"Device not understood. Only \"cpu\" is allowed, but received: {device}")
     n = _frequency_count(n)
     step = 1.0 / (n * d)
+    _addressable(n // 2 + 1)
     values = asarray(_numerical_root.arange(_builtins.max(n // 2 + 1, 0)), "float64") * step
     return values if dtype is None else asarray(values, dtype)
 
