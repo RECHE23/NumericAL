@@ -46,6 +46,20 @@ A change that can break code is listed under **Breaking** and held for a month's
 - **A transpose times a vector on the AMX path reads the transpose where it lies** (`m.T @ x` in float64 of 2^15 to
   2^18 elements, Apple's processors): the AMX's eight lanes per row summed a column at a time over the rows, its bits,
   in place of a copy of the transpose for the AMX. On an M1, 400 × 400 68 → 22 µs, 500 × 500 96 → 28 µs; the same bits.
+- **A reshape of a view is a view wherever NumPy's is**: axes of extent 1 put in or taken out, an axis split, axes
+  whose elements lie one stride from the next joined, read where the elements lie in place of the view's copy. On an
+  M1, `expand_dims(m.T, 0)` of 2000 × 2000 1.33 ms → 3 µs, and `squeeze`, `atleast_2d`, `atleast_3d` and a
+  reduction's `keepdims` with it. A complex `prod` and `cumprod` along a transpose's axis read its elements where they
+  lie, as a real one's do, each product NumPy's loop for the transpose's shape (`prod(z.T, axis=0)` of 1000 × 1000
+  1.49 → 0.81 ms, `cumprod` 1.72 → 1.20 ms). The same bits.
+- **`where` without broadcasting's walk where it has none to do**: each operand one element or of the one shape, all
+  contiguous or all a transpose of the same order (read where it lies). On an M1, of 2000 × 2000, `where(c, m, 0)`
+  1.89 → 0.76 ms, `where(m.T > 0, m.T, 0)` 4.24 → 1.06 ms. The NaN-ignoring reductions skip `where` when nothing is
+  NaN: `nansum(m, axis=0)` 3.7 → 1.5 ms, `nansum(m.T, axis=0)` 5.2 → 0.92 ms. `array_equal` of two transposes alike
+  compares them where they lie (4.6 → 1.4 ms).
+- **A complex NumPy array converted into a Tensor is copied once, on the threads**, as a real one is, where its
+  elements were zeroed first and copied on one thread: on an M1, `asarray` of 1000 × 1000 complex128 0.46 → 0.17 ms,
+  of 3000 × 3000 complex64 9.2 → 3.2 ms.
 - **A negative fractional power of a Hermitian matrix five to ten times faster** (`fractional_matrix_power`): the
   Schur form by the Hermitian eigensolver, `T` the upper triangle of `Vᴴ A V` (its rounding kept, as a Schur form keeps
   it) and `T^t` to first order in that rounding in place of the Padé steps; the condition that chooses `⌊p⌋` or `⌈p⌉`

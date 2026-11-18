@@ -2090,10 +2090,17 @@ namespace numerical {
                                        std::size_t        axis,
                                        const numpy_loops& loops = numpy_wheel_loops())
     {
+      // The loop the shape asks for, whichever axis of a transpose's elements the line lies along.
       const bool reduction {walk_along(t.shape(), axis).inner == 1};
-      return fold_along(t, axis, C {1}, [reduction, &loops](const C& product, const C& x) {
-                          return reduction ? numpy_reduction_multiply(product, x, loops) : numpy_multiply(product, x, loops.products);
-                        });
+      const auto multiply {[reduction, &loops](const C& product, const C& x) {
+                             return reduction ? numpy_reduction_multiply(product, x, loops) : numpy_multiply(product, x, loops.products);
+                           }};
+      if (auto laid {as_laid_reduced(t, axis, [&multiply](const tensor<C>& elements, std::size_t along) {
+                                       return fold_along(elements, along, C {1}, multiply);
+                                     })}) {
+        return std::move(*laid);
+      }
+      return fold_along(t, axis, C {1}, multiply);
     }
 
     //! \brief The product of every element of a complex \p t, in order from 1 (NumPy's identity), as NumPy's
@@ -3236,9 +3243,15 @@ namespace numerical {
                                           const numpy_loops& loops = numpy_wheel_loops())
     {
       const bool vector {walk_along(t.shape(), axis).extent == 2};
-      return scan_along(t, axis, [vector, &loops](const C& running, const C& x) {
-                          return vector ? numpy_multiply(running, x, loops.products) : numpy_reduction_multiply(running, x, loops);
-                        });
+      const auto multiply {[vector, &loops](const C& running, const C& x) {
+                             return vector ? numpy_multiply(running, x, loops.products) : numpy_reduction_multiply(running, x, loops);
+                           }};
+      if (auto laid {as_laid_along(t, axis, [&multiply](const tensor<C>& elements, std::size_t along) {
+                                     return scan_along(elements, along, multiply);
+                                   })}) {
+        return std::move(*laid);
+      }
+      return scan_along(t, axis, multiply);
     }
 
     //! \brief Whether \p a sorts before \p b as NumPy sorts reals: ascending, NaNs last.

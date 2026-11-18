@@ -3158,10 +3158,9 @@ void gather_typed(const unsigned char*           base,
     }
     // Groups of rows of about 2^14 elements on the threads, each group's first row's index from its number: each
     // element written once, the copy and the first touch of the output's pages shared (a copy from one thread left
-    // them to page faults on it alone). A complex output, its pages touched by the threads' zeros already, in one
-    // group: its copy shared took longer (M1 Pro, 500 × 1000 complex128: 470 → 580 µs).
+    // them to page faults on it alone).
     constexpr std::size_t group_elements {std::size_t {1} << 14U};
-    const std::size_t     group {complex_scalar<Out> ? rows : std::max<std::size_t>(1, group_elements / inner)};
+    const std::size_t     group {std::max<std::size_t>(1, group_elements / inner)};
     numerical::detail::parallel_for((rows + group - 1) / group, numerical::detail::memory_element_weight * group * inner, [&](std::size_t g) {
         const std::size_t        first {g * group};
         const std::size_t        last {std::min(rows, first + group)};
@@ -3261,9 +3260,8 @@ any_tensor elements_as(const unsigned char*            base,
                        std::size_t                     total,
                        const element_type&             element)
 {
-    // Each element written below: a real one left unset until then; a complex one's own constructor zeroes it, on
-    // one thread, where filling with zeros shares the work (and the pages' first touch) among them.
-    numerical::buffer<Out> values {complex_scalar<Out> ? numerical::buffer<Out>(total, Out {}) : numerical::buffer<Out>(total)};
+    // Each element written below, left unset until then (a complex one too: buffer's allocator constructs none).
+    numerical::buffer<Out> values(total);
     if (!element.swapped) { // the common case: it reads only the buffer
         bool gathered {false};
         {

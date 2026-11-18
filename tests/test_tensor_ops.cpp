@@ -190,6 +190,20 @@ namespace {
       ok = ok && numerical::detail::numpy_cumprod(three, 0, loops).data()[2] == by_reduction;
       ok = ok && numerical::detail::numpy_cumprod(rows, 0, loops).data()[3] == by_vector;
     }
+    // A transpose's lines where its elements lie: each loop the one its own shape asks for, as its copy's.
+    const numerical::detail::numpy_loops split {.products = true, .scalar_products = false, .quotients = false,
+                                                .reductions = false, .late_reductions = false};
+    const numerical::tensor<C> pairs           {numerical::tensor<C> {{2, 2}, numerical::buffer<C> {x, y, x, y}}.transposed()};
+    const numerical::tensor<C> runs            {numerical::tensor<C> {{2, 3}, numerical::buffer<C> {one, x, y, one, x, y}}.transposed()};
+    ok = ok && numerical::detail::numpy_prod(pairs, 0, split).data()[1] == fused;     // a vector loop between rows
+    ok = ok && numerical::detail::numpy_cumprod(runs, 0, split).data()[5] == rounded; // the reduction loop past two
+    for (const numerical::tensor<C>& view : {pairs, runs}) {
+      const numerical::tensor<C> copied {view.shape(), view.data()};
+      for (const std::size_t axis : {std::size_t {0}, std::size_t {1}}) {
+        ok = ok && numerical::detail::numpy_prod(view, axis, split) == numerical::detail::numpy_prod(copied, axis, split);
+        ok = ok && numerical::detail::numpy_cumprod(view, axis, split) == numerical::detail::numpy_cumprod(copied, axis, split);
+      }
+    }
     const numerical::tensor<C> infinite {{2}, numerical::buffer<C> {C {inf, -inf}, C {R {3}, R {0}}}};
     ok = ok && nan_both(numerical::detail::numpy_prod(infinite));
     ok = ok && nan_both(numerical::detail::numpy_cumprod(infinite, 0).data()[1]);
@@ -859,6 +873,47 @@ TEST(max_and_min_propagate_nan_and_refuse_an_empty_reduction)
   EXPECT(numerical::min(integers) == -2);
   EXPECT_THROWS((void)numerical::max(numerical::zeros<double>({0})), numerical::dimension_error);
   EXPECT_THROWS((void)numerical::min(numerical::zeros<double>({2, 0}), 1), numerical::dimension_error);
+}
+
+// A reshape of a view reads it where it lies wherever NumPy's is a view: axes of extent 1 put in or taken out, an axis
+// split, axes joined whose elements lie one stride from the next (from a slice's offset, along a reversed axis); any
+// other is the view's row-major copy, shared. The elements, in row-major order, the view's either way.
+TEST(a_reshape_of_a_view_reads_it_where_it_lies)
+{
+  const tensor<double> cube     {counting({8, 16, 10})};      // its slices past 512 elements: views
+  const tensor<double> permuted {cube.transposed({2, 0, 1})}; // (10, 8, 16), strides (1, 160, 10)
+  const tensor<double> rows     {cube.sliced({1, 0, 0}, {2, 1, 1}, {4, 16, 10}, std::vector<bool>(3, true))};
+  const tensor<double> reversed {cube.sliced({7, 0, 0}, {-1, 1, 1}, {8, 16, 10}, std::vector<bool>(3, true))};
+  struct reshaping {
+    const tensor<double>* view;
+    shape                 into;
+    bool                  in_place;
+  };
+  const std::vector<reshaping> reshapings {
+    {.view = &permuted, .into = {1, 10, 8, 16, 1}, .in_place = true},
+    {.view = &permuted, .into = {10, 128}, .in_place = true},
+    {.view = &permuted, .into = {10, 2, 4, 16}, .in_place = true},
+    {.view = &permuted, .into = {1, 10, 1, 128}, .in_place = true},
+    {.view = &permuted, .into = {80, 16}, .in_place = false},
+    {.view = &permuted, .into = {1280}, .in_place = false},
+    {.view = &rows, .into = {4, 160}, .in_place = true},
+    {.view = &rows, .into = {1, 4, 4, 4, 10}, .in_place = true},
+    {.view = &rows, .into = {640}, .in_place = false},
+    {.view = &reversed, .into = {8, 160}, .in_place = true},
+    {.view = &reversed, .into = {1280}, .in_place = false},
+    {.view = &reversed, .into = {2, 4, 16, 10}, .in_place = true}};
+  for (const reshaping& each : reshapings) {
+    const tensor<double> reshaped {each.view->reshaped(each.into)};
+    EXPECT(reshaped.shape() == each.into && reshaped.data() == each.view->data());
+    EXPECT(reshaped.contiguous() != each.in_place);
+    EXPECT(each.in_place ? reshaped.origin() == each.view->origin() : reshaped.data().data() == each.view->data().data());
+  }
+  const tensor<double> squeezed {permuted.reshaped({1, 10, 1, 8, 16}).reshaped({10, 8, 16})};
+  EXPECT(!squeezed.contiguous() && squeezed.strides() == permuted.strides() && squeezed.data() == permuted.data());
+  EXPECT(permuted.reshaped({10, 128}).strides() == (std::vector<std::ptrdiff_t> {1, 10}));
+  EXPECT(numerical::sum(permuted.reshaped({1, 10, 128}), 2) == numerical::sum(tensor<double> {{1, 10, 128}, permuted.data()}, 2));
+  EXPECT_THROWS((void)permuted.reshaped({1281}), numerical::dimension_error);
+  EXPECT_THROWS((void)rows.reshaped({639}), numerical::dimension_error);
 }
 
 TEST(reshape_keeps_the_order_and_checks_the_count)

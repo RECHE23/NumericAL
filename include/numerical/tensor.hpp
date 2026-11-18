@@ -142,14 +142,29 @@ namespace numerical {
 
     /*!
      * \brief This tensor's elements in \p shape, without a copy: the new tensor shares the buffer, as NumPy's
-     *        reshape of a contiguous array is a view. A view's (\ref transposed) are its row-major copy (\ref data),
-     *        made if not yet made.
+     *        reshape of a contiguous array is a view. A view's are read where they lie where NumPy's reshape of it is
+     *        a view too (\ref reshaped_strides; axes of extent 1 put in or taken out, an axis split, axes whose
+     *        elements lie one stride from the next joined); else they are its row-major copy (\ref data), made if
+     *        not yet made.
      * \throws dimension_error If \p shape holds another number of elements.
      */
     [[nodiscard]] tensor reshaped(std::vector<std::size_t> shape) const
     {
+      if (copy_ == nullptr) {
+        return tensor {std::move(shape), data_};
+      }
+      std::size_t count {1};
+      for (const std::size_t extent : shape) {
+        count = detail::checked_mul(count, extent);
+      }
+      if (count != count_) {
+        throw dimension_error("tensor: data size does not match the shape");
+      }
+      if (auto strides {reshaped_strides(shape)}) {
+        return tensor {std::move(shape), std::move(*strides), offset_, data_};
+      }
       // A view's copy shared as it is held, with the view's state (an aliasing pointer, which that state never holds).
-      return tensor {std::move(shape), copy_ == nullptr ? data_ : std::shared_ptr<const buffer<T>>(copy_, &copied_out())};
+      return tensor {std::move(shape), std::shared_ptr<const buffer<T>>(copy_, &copied_out())};
     }
 
     /*!
@@ -410,6 +425,54 @@ namespace numerical {
       else {
         copy_ = std::make_shared<row_major_copy>();
       }
+    }
+
+    /*!
+     * \brief The strides that read this view's elements, in row-major order, under \p shape (as many elements), as
+     *        NumPy's reshape without a copy finds them; nothing where none do. The axes longer than 1 of each, in
+     *        order, are cut into runs of equal counts of elements: a run of this view's axes is read as one where each
+     *        axis but its last steps by the next one's whole extent, the run of \p shape's axes then row-major over
+     *        the last one's stride. An axis of extent 1 moves nothing: any stride.
+     */
+    [[nodiscard]] std::optional<std::vector<std::ptrdiff_t>> reshaped_strides(const std::vector<std::size_t>& shape) const
+    {
+      std::vector<std::size_t>    from;
+      std::vector<std::ptrdiff_t> steps;
+      for (std::size_t axis {0}; axis < shape_.size(); ++axis) {
+        if (shape_[axis] != 1) {
+          from.push_back(shape_[axis]);
+          steps.push_back(strides_[axis]);
+        }
+      }
+      std::vector<std::ptrdiff_t> strides(shape.size(), 1);
+      // Every extent is 1 or more (an empty tensor is no view) and both hold as many elements: a run's counts meet
+      // before either side runs out.
+      for (std::size_t to {0}, at {0}; to < shape.size() && at < from.size();) {
+        std::size_t to_end   {to + 1};
+        std::size_t at_end   {at + 1};
+        std::size_t to_count {shape[to]};
+        std::size_t at_count {from[at]};
+        while (to_count != at_count) {
+          if (to_count < at_count) {
+            to_count *= shape[to_end++];
+          }
+          else {
+            at_count *= from[at_end++];
+          }
+        }
+        for (std::size_t k {at}; k + 1 < at_end; ++k) {
+          if (steps[k] != static_cast<std::ptrdiff_t>(from[k + 1]) * steps[k + 1]) {
+            return std::nullopt;
+          }
+        }
+        strides[to_end - 1] = steps[at_end - 1];
+        for (std::size_t k {to_end - 1}; k > to; --k) {
+          strides[k - 1] = strides[k] * static_cast<std::ptrdiff_t>(shape[k]);
+        }
+        to = to_end;
+        at = at_end;
+      }
+      return strides;
     }
 
     //! \brief A view's elements in row-major order, copied out on the first call.

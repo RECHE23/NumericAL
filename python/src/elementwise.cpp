@@ -1749,6 +1749,16 @@ PyObject* module_equal(PyObject* /*self*/, PyObject* args)
     }
     const bool equal {std::visit([&](const auto& x) {
                                      const auto& y {std::get<std::decay_t<decltype(x)>>(*b)};
+                                     // Equal element by element in any order: two transposes of the same order and shape compared
+                                     // where they lie.
+                                     if (x.shape() == y.shape()) {
+                                         const auto x_laid {x.laid_out()};
+                                         const auto y_laid {y.laid_out()};
+                                         if (x_laid && y_laid && x_laid->second == y_laid->second) {
+                                             const auto& u {x_laid->first.data()};
+                                             return std::equal(u.begin(), u.end(), y_laid->first.data().begin());
+                                         }
+                                     }
                                      return std::equal(x.data().begin(), x.data().end(), y.data().begin());
                                  }, *a)};
     return Py_NewRef(equal ? Py_True : Py_False);
@@ -1910,6 +1920,71 @@ PyObject* module_invert(PyObject* /*self*/, PyObject* args)
     }
 }
 
+// where(c, x, y) without broadcasting's walk, where it has none to do: each operand one element (of no more axes than
+// the others), or of the one shape the others share; those all row-major, or all a transpose of the same order, read
+// where they lie (the result put back in that order). Nothing otherwise. Each element chosen alone: the same either way.
+template <typename T>
+std::optional<numerical::tensor<T>> where_alike(const bool_tensor& c, const numerical::tensor<T>& x, const numerical::tensor<T>& y)
+{
+    const std::vector<std::size_t>* shape {nullptr};
+    for (const std::vector<std::size_t>* each : {&c.shape(), &x.shape(), &y.shape()}) {
+        if (numerical::detail::element_count(each->begin(), each->end()) != 1) {
+            shape = each;
+            break;
+        }
+    }
+    if (shape == nullptr) {
+        return std::nullopt;
+    }
+    const auto single {[shape](const auto& t) { return t.size() == 1 && t.rank() <= shape->size(); }};
+    const auto alike {[&](const auto& t) { return single(t) || t.shape() == *shape; }};
+    if (!alike(c) || !alike(x) || !alike(y)) {
+        return std::nullopt;
+    }
+    // Each operand's elements and its step through them: 0 for one element.
+    const boolean*                   holds {c.origin()};
+    const T*                         u {x.origin()};
+    const T*                         v {y.origin()};
+    std::vector<std::size_t>         lying {*shape};
+    std::optional<std::vector<std::size_t>> order;
+    const bool                       row_major {(single(c) || c.contiguous()) && (single(x) || x.contiguous()) && (single(y) || y.contiguous())};
+    if (!row_major) {
+        const auto laid_as {[&](const auto& t, auto& at) {
+            if (single(t)) {
+                return true;
+            }
+            const auto laid {t.laid_out()};
+            if (!laid || (order && *order != laid->second)) {
+                return false;
+            }
+            order = laid->second;
+            lying = laid->first.shape();
+            at    = laid->first.origin();
+            return true;
+        }};
+        if (!laid_as(c, holds) || !laid_as(x, u) || !laid_as(y, v)) {
+            return std::nullopt;
+        }
+    }
+    const std::size_t at_c {single(c) ? 0U : 1U};
+    const std::size_t at_x {single(x) ? 0U : 1U};
+    const std::size_t at_y {single(y) ? 0U : 1U};
+    const std::size_t count {numerical::detail::element_count(lying.begin(), lying.end())};
+    numerical::buffer<T> out(count);
+    constexpr std::size_t chunk {numerical::detail::elementwise_chunk};
+    numerical::detail::parallel_for((count + chunk - 1) / chunk, chunk, [&](std::size_t k) {
+        const std::size_t last {std::min(count, (k + 1) * chunk)};
+        for (std::size_t i {k * chunk}; i < last; ++i) {
+            out[i] = holds[i * at_c].value ? u[i * at_x] : v[i * at_y];
+        }
+    });
+    numerical::tensor<T> chosen {std::move(lying), std::move(out)};
+    if (order) {
+        return chosen.transposed(numerical::detail::view_axes(*order));
+    }
+    return chosen;
+}
+
 // _where(condition, x, y) -> Tensor.
 PyObject* module_where(PyObject* /*self*/, PyObject* args)
 {
@@ -1936,10 +2011,15 @@ PyObject* module_where(PyObject* /*self*/, PyObject* args)
             std::visit([&](const auto& p) {
                 using tensor_type = std::decay_t<decltype(p)>;
                 using T           = element_of_t<tensor_type>;
+                const tensor_type& q {std::get<tensor_type>(*y)};
+                if (auto chosen {where_alike(*c, p, q)}) {
+                    result.emplace(std::move(*chosen));
+                    return;
+                }
                 const boolean* const holds {c->data().data()};
                 const T* const       u {p.data().data()};
-                const T* const       v {std::get<tensor_type>(*y).data().data()};
-                const std::array     shapes {c->shape(), p.shape(), shape_of(*y)};
+                const T* const       v {q.data().data()};
+                const std::array     shapes {c->shape(), p.shape(), q.shape()};
                 result.emplace(broadcast_elements<T>(shapes, [&](const std::array<std::size_t, 3>& at) {
                     return holds[at[0]].value ? u[at[1]] : v[at[2]];
                 }));

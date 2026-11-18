@@ -7425,6 +7425,8 @@ def _without_nans(a, value):
     if a.dtype in ("int64", "bool"):
         return a, None
     mask = isnan(a)
+    if not any(mask):  # nothing to replace: `a` as it is, where `where` copied it
+        return a, mask
     return where(mask, value, a), mask
 
 

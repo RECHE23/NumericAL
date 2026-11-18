@@ -120,6 +120,21 @@ _FLOAT_OPERATIONS = [
     ("dct axis 0", lambda x: numerical.fft.dct(x, axis=0)),
     ("fftshift", numerical.fft.fftshift),
     ("tolist", lambda x: numerical.asarray(x.tolist(), dtype=x.dtype)),
+    ("expand_dims", lambda x: numerical.expand_dims(x, 1)),
+    ("squeezed back", lambda x: numerical.squeeze(numerical.expand_dims(x, 0), 0)),
+    ("atleast_3d", numerical.atleast_3d),
+    ("rows joined", lambda x: numerical.reshape(x, (-1, x.shape[-1]))),
+    ("last axis split", lambda x: numerical.reshape(x, x.shape[:-1] + (1, x.shape[-1], 1))),
+    ("sum axis 0 kept", lambda x: numerical.sum(x, axis=0, keepdims=True)),
+    ("prod axis -1", lambda x: numerical.prod(x, axis=-1)),
+    ("cumprod axis -1", lambda x: numerical.cumprod(x, axis=-1)),
+    ("where of a number", lambda x: numerical.where(x.real > 0, x, 0.25)),
+    ("where of views alike", lambda x: numerical.where(x.real > 0, x * 2.0, x)),
+    ("where of a mask alone", lambda x: numerical.where(x.real > 0, 1.5, -1.5)),
+    ("nansum axis 0", lambda x: numerical.nansum(x, axis=0)),
+    ("nansum axis -1 with NaNs", lambda x: numerical.nansum(numerical.where(x.real > 1.0, float("nan"), x), axis=-1)),
+    ("array_equal", lambda x: numerical.array_equal(x, x * 1.0)),
+    ("array_equal apart", lambda x: numerical.array_equal(x, x + 1.0)),
 ]
 
 
@@ -250,6 +265,32 @@ class TestViews(unittest.TestCase):
                         for axis in range(view.ndim):
                             self.assertEqual(getattr(numerical, op)(view, axis=axis).tolist(),
                                              getattr(np, op)(expected(source), axis=axis).tolist())
+
+    def test_where_and_array_equal_of_operands_laid_apart(self):
+        # Operands of one shape laid in different orders, contiguous beside a transpose, a single element of more axes
+        # than the others, every one a single element, a condition broadcast: NumPy's answer whichever path reads them.
+        rng = np.random.default_rng(12)
+        a = rng.standard_normal((6, 6, 6))
+        t = numerical.asarray(a)
+        orders = ((0, 1, 2), (1, 0, 2), (2, 1, 0), (2, 0, 1))
+        for c_axes in orders:
+            for x_axes in orders:
+                for y_axes in orders:
+                    with self.subTest(c=c_axes, x=x_axes, y=y_axes):
+                        c = numerical.transpose(t, c_axes) > 0
+                        x = numerical.transpose(t * 2.0, x_axes)
+                        y = numerical.transpose(t, y_axes)
+                        want = np.where(np.transpose(a, c_axes) > 0, np.transpose(a * 2.0, x_axes), np.transpose(a, y_axes))
+                        self.assertEqual(_bits(numerical.where(c, x, y)), _bits(want))
+                        self.assertEqual(numerical.array_equal(x, y * 2.0), np.array_equal(np.transpose(a * 2.0, x_axes),
+                                                                                           np.transpose(a, y_axes) * 2.0))
+        one = numerical.asarray(np.full((1, 1, 1, 1), 3.0))
+        for c, x, y, want in ((t.T > 0, one, t.T, np.where(a.T > 0, np.full((1, 1, 1, 1), 3.0), a.T)),
+                              (numerical.asarray(True), one, one, np.full((1, 1, 1, 1), 3.0)),
+                              (t[0] > 0, t.T, 1.0, np.where(a[0] > 0, a.T, 1.0)),
+                              (t.T > 0, 1.0, numerical.asarray([[[2.0]]]), np.where(a.T > 0, 1.0, [[[2.0]]]))):
+            with self.subTest(c=getattr(c, "shape", ()), x=getattr(x, "shape", ())):
+                self.assertEqual(_bits(numerical.where(c, x, y)), _bits(want))
 
     def test_a_view_shared_by_threads(self):
         a = np.random.default_rng(7).standard_normal((300, 200))
