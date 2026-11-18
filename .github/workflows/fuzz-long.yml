@@ -113,6 +113,16 @@ jobs:
             seed=$(od -An -N4 -tu4 /dev/urandom | tr -d ' ')
             python fuzz/edges.py --seed "$seed" --cases 5000
           done
+      # Views against their copies (fuzz/views.py: chains of permutations, slices, reshapes and diagonals, each
+      # operation's bits on the view and on the same elements contiguous), twenty fresh seeds: about a minute.
+      - name: Fuzz views against their copies
+        env:
+          PYTHONPATH: python
+        run: |
+          for _ in $(seq 20); do
+            seed=$(od -An -N4 -tu4 /dev/urandom | tr -d ' ')
+            python fuzz/views.py --seed "$seed" --cases 5000
+          done
       # The Fourier transforms (fuzz/fft.py: drawn lengths, axes, dtypes, point counts and scalings against numpy.fft,
       # each line's bits alone, on every path), a fresh seed each campaign; a tenth of the time.
       - name: Fuzz the Fourier transforms against NumPy

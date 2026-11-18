@@ -38,7 +38,7 @@ FORMAT_FILES := $(shell find include tests blas -name '*.hpp' -o -name '*.cpp')
 
 .PHONY: gallery-long fuzz-matfuncs fuzz-hostile fuzz-scaled headers-alone always actionlint check-pins ci-arm-gcc all build test sanitize tsan coverage coverage-build coverage-x86 coverage-html \
         lint misra doc doc-no-coverage docs-venv doc-xml docs-site docs-site-gate format format-check full-local-gate test-gcc test-gcc-neon lint-gate stubtest-gate bench-diff-selftest \
-        python python-test python-sanitize python-stubtest fuzz-linalg fuzz-edges fuzz-fft fuzz-numpy fuzz-numpy-push fuzz-scipy bench-diff bench-linalg bench-python bench-fuzz bench-gemm version-check install uninstall release release-bump clean help
+        python python-test python-sanitize python-stubtest fuzz-linalg fuzz-edges fuzz-views fuzz-fft fuzz-numpy fuzz-numpy-push fuzz-scipy bench-diff bench-linalg bench-python bench-fuzz bench-gemm version-check install uninstall release release-bump clean help
 
 .DEFAULT_GOAL := help
 
@@ -62,6 +62,7 @@ help:
 	@echo "  make python-sanitize  The Python suite under ASan + UBSan (Linux, GCC)"
 	@echo "  make fuzz-linalg  Decompositions vs NumPy on adversarial matrices, every GEMM path (CASES=, SEED=)"
 	@echo "  make fuzz-edges   Element-wise ops and reductions vs NumPy on zeros, infinities, NaNs, empty axes (CASES=, SEED=)"
+	@echo "  make fuzz-views   Views (permutations, slices, reshapes, diagonals) vs their copies, bit for bit (CASES=, SEED=)"
 	@echo "  make fuzz-fft     Fourier transforms vs NumPy over drawn lengths, axes, dtypes and scalings, every path (CASES=, SEED=)"
 	@echo "  make fuzz-scaled  Matrices scaled to 1e±150, and each fast path against its general one (CASES=, SEED=)"
 	@echo "  make fuzz-numpy   Sorting, sets, statistics, histograms, polynomials, shapes… vs NumPy on drawn inputs (CASES=, SEED=)"
@@ -290,6 +291,7 @@ python-sanitize:
 	$(SAN_RUN) -m unittest discover -s python/tests
 	$(SAN_RUN) fuzz/npdiff.py --cases 100 --seed 20261104
 	$(SAN_RUN) fuzz/edges.py --cases 5000 --seed 20261104
+	$(SAN_RUN) fuzz/views.py --cases 2000 --seed 20261104
 
 # The stubs are checked against the runtime surface (mypy.stubtest): a function or Tensor method added to the
 # binding or the package and not to numerical/__init__.pyi or _numerical.pyi fails here. MYPY_PYTHON carries mypy.
@@ -303,6 +305,11 @@ fuzz-linalg: python
 
 fuzz-edges: python
 	$(PYRUN) fuzz/edges.py --cases $(or $(CASES),20000) $(if $(SEED),--seed $(SEED),)
+
+# Views against their copies (fuzz/views.py): CASES chains of view steps (default 5000), each operation's bits on the
+# view and on its contiguous copy, from SEED.
+fuzz-views: python
+	$(PYRUN) fuzz/views.py --cases $(or $(CASES),5000) $(if $(SEED),--seed $(SEED),)
 
 fuzz-fft: python
 	$(PYRUN) fuzz/fft.py --cases $(or $(CASES),300) $(if $(SEED),--seed $(SEED),)
@@ -499,7 +506,7 @@ SCIFORGE_MAKE    ?= ../sciforge/make
 QUALITY_COMMIT   := format-check actionlint headers-alone doc-no-coverage coverage-gate
 QUALITY_PUSH     := docs-site-gate version-check check-pins misra stubtest-gate lint-gate bench-diff-selftest python-test fuzz-numpy-push test test-gcc test-gcc-neon \
                     ci-arm-gcc sanitize tsan
-QUALITY_RELEASE  := bench-diff fuzz-linalg fuzz-edges fuzz-fft fuzz-numpy fuzz-scipy
+QUALITY_RELEASE  := bench-diff fuzz-linalg fuzz-edges fuzz-views fuzz-fft fuzz-numpy fuzz-scipy
 -include $(SCIFORGE_MAKE)/quality.mk
 
 # The calendar release every SciForge project cuts (the sibling checkout's make/release.mk): bench-diff against the last
