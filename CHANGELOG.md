@@ -40,7 +40,8 @@ A change that can break code is listed under **Breaking** and held for a month's
   `min`); `var` and `std` take `out` fourth, before `ddof`; `argmax` and `argmin` `out` third, `keepdims` by name;
   `take` `out` before `mode`; the `*_like` functions `order` and `subok` before `shape`; `asarray`, `zeros`, `ones`,
   `empty` and `full` take `order` (and `like`, None) as NumPy's. `out` is None alone, a Tensor never written into.
-  The Tensor methods follow. `sum(a, 0, True)` read `True` as `keepdims` and now as the dtype, which raises: pass
+  The Tensor methods follow, `any` and `all` in the order NumPy documents (its methods take `dtype` second, an
+  accident it deprecates from NumPy 2.6). `sum(a, 0, True)` read `True` as `keepdims` and now as the dtype, which raises: pass
   `keepdims=True`. NumPy's names: `full(shape, fill_value)`, `array_equal(a1, a2)`, `empty_like(prototype)`,
   `asarray(a)`, `real(val)`, `imag(val)`, `tensordot(a, b, axes)` (its `axes` positional too).
 - **Python 3.11 or newer**: the wheels are cp311-abi3 (3.10 reached its end of life in October 2026).
