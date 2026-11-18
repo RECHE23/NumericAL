@@ -318,7 +318,7 @@ class TestViews(unittest.TestCase):
                     for op in ("sum", "max", "min", "any", "all", "count_nonzero"):
                         self.assertEqual(numerical.asarray(getattr(numerical, op)(view)).tolist(),
                                          np.asarray(getattr(np, op)(expected(source))).tolist())
-                    for op in ("sum", "max", "min", "any", "all", "mean"):
+                    for op in ("sum", "prod", "max", "min", "any", "all", "mean"):
                         for axis in range(view.ndim):
                             self.assertEqual(getattr(numerical, op)(view, axis=axis).tolist(),
                                              getattr(np, op)(expected(source), axis=axis).tolist())
