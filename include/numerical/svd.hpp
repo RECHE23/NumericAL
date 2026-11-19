@@ -2318,7 +2318,8 @@ namespace numerical {
    * \brief The eigenvalues of the real symmetric or complex Hermitian \p a, ascending, without its eigenvectors, as
    *        `numpy.linalg.eigvalsh`: its Householder tridiagonal (no basis formed) and the implicit QL iteration on it,
    *        no rotation kept. Only the lower triangle is read, and of the diagonal its real part. Each value to an
-   *        absolute accuracy of the largest magnitude times the machine epsilon, as \ref symmetric_eigen's.
+   *        absolute accuracy of the largest magnitude times the machine epsilon, as \ref symmetric_eigen's; a graded
+   *        tridiagonal's small values to their relative accuracy, as LAPACK's `dsteqr` keeps them.
    * \throws dimension_error   If \p a is not square.
    * \throws non_finite_error  If an entry read is infinite or NaN.
    * \throws convergence_error If the iteration does not converge within its bound (not observed).

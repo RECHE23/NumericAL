@@ -67,6 +67,10 @@ and an `IndexError`), is also a `numpy.exceptions.AxisError`; where `scipy.linal
   before 2.5 made them real where it could.
 - **A float32 or complex64 decomposition** is computed in double precision and rounded to single, below order 500
   (see {doc}`linalg`): the double answer of the same values, rounded once, where NumPy's LAPACK computes in single.
+  From order 500, `solve`, `inv`, `det`, `slogdet`, `cholesky`, `lu_factor` and `lu_solve` factorise in single
+  precision, as NumPy's LAPACK does, and differ from it in the last bits; the other decompositions stay in double.
+  A float32 or complex64 FFT computes in single precision at every length, as NumPy's pocketfft, its last bits
+  NumPy's or not.
 - **A float32 sum of more than a thousand elements on 32-bit Windows**: NumPy's build there ends on other last bits
   than its other builds, whose bits NumericAL's are everywhere.
 - **A sum along an axis that is not the last** (`sum(a, axis=0)` of a matrix, and the `mean`, `var` and `std` over

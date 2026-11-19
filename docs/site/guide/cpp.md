@@ -88,11 +88,14 @@ their complex forms), so that an integer matrix is refused at compile time. How 
 - LU (`lu_decomposition`, `solve`), Cholesky and the unpivoted QR compute in the scalar itself: a `long double`
   matrix is factorised to `long double`'s precision.
 - The SVD takes any field and computes in `double`: its singular values are `double`, and a `long double` matrix's
-  factors hold a `double`'s precision.
+  factors hold a `double`'s precision. Where `long double` reaches past `double`'s range (x86-64's 80 bits), a
+  matrix one of whose nonzero singular values lies outside `double`'s normal numbers is refused (`argument_error`)
+  rather than answered 0 or ∞.
 - The eigendecompositions (`eigen_decomposition`, `symmetric_eigen`, `hermitian_eigen`), the Schur form, the pivoted QR,
   LDLᴴ and the generalized forms are of `double` and `std::complex<double>`; the class templates among them take
   `numerical::double_field` and refuse another scalar by that name. A `float` matrix through the Python binding is
-  computed in `double` and narrowed.
+  computed in `double` and narrowed, below order 500; from order 500, `solve`, `inv`, `det`, `slogdet`, `cholesky`,
+  `lu_factor` and `lu_solve` factorise it in `float` (see {doc}`linalg`).
 
 ## Eigenvalues and singular values
 

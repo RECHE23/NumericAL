@@ -17,7 +17,7 @@ the conditioning, and a wrong update or deflation misses it by orders of magnitu
 | `lstsq`, `pinv`, `matrix_rank` | the solution within the perturbation bound of the rank kept (`c` times κ and κ² times the residual), the rank NumPy's |
 | `eig`, `eigvals` | each pair's residual within `c ‖A‖` (on `D⁻¹ A D` for a graded matrix, as LAPACK balances it), unit vectors whose largest component is real; each of NumPy's well-conditioned eigenvalues within twice that bound times its condition number; complex conjugates paired to the bit |
 | `norm`, `cond`, `svdvals`, products | within the rounding of their sums: `c` times the scale, `cond` (2-norm) within `c κ²` below κ = 10⁶; a 2-norm never overflows or underflows where its value is in range |
-| `float32`, `complex64` | the `double` answer of the same values rounded to single, to the bit |
+| `float32`, `complex64` | the `double` answer of the same values rounded to single, to the bit, below order 500; from order 500, `solve`, `inv`, `det`, `slogdet`, `cholesky`, `lu_factor` and `lu_solve` factorise in single precision, as NumPy's LAPACK (see {doc}`linalg`); the FFT computes in single precision at every length |
 | any of them | the same bits on one thread as on all; a NaN or an infinity in what is read raises `LinAlgError` |
 
 `make fuzz-edges` holds the element-wise operations and reductions to NumPy's answers on signed zeros, infinities,

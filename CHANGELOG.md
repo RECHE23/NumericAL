@@ -13,6 +13,15 @@ A change that can break code is listed under **Breaking** and held for a month's
 - **A view's element count is checked**: `tensor::sliced` with a step of 0 (an index repeated) and the view
   constructor multiplied the extents unchecked, so that a count past `std::size_t` wrapped into an inconsistent
   tensor (the binding's `_take` among them); they now raise `dimension_error`.
+
+### Documentation
+
+- **The float32 regimes, the long double SVD and the FFT's rounding** said as the code does: from order 500, `solve`,
+  `inv`, `det`, `slogdet`, `cholesky`, `lu_factor` and `lu_solve` factorise a float32 matrix in single precision (the
+  accuracy table and the Differences page described the double regime alone, the C++ guide the binding's narrowing
+  alone); a float32 FFT computes in single precision; an SVD of a `long double` matrix refuses a singular value
+  outside `double`'s normal numbers (x86-64); `limit_gemm_path` also rounds the FFT's butterflies, fused past the
+  portable kernel; `eigvalsh`'s small values of a graded matrix to their relative accuracy.
 - **A copy of a view holds its own elements** (`copy`, `Tensor.copy`, `copy.copy`, `asarray(…, copy=True)`, `astype`
   in the same dtype, `from_dlpack(…, copy=True)`), as `ndarray.copy`'s: a transpose's or a slice's copy no longer
   keeps the array it reads alive (a copy of half the rows of a 4000 × 4000 array held 61 MB, with the 122 MB array

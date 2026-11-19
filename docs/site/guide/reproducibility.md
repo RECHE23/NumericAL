@@ -51,6 +51,8 @@ of lanes by one written tree), so one binary, built by one compiler, gives the s
 with AVX2, whether it has AVX-512 or not, on any number of threads (41 functions checked byte for byte, from
 `matmul` and `solve` to `eigh`, `svd`, `eig`, `qz` and `logm`); two compilers' builds, and the portable kernel, may
 differ in the last bits.
+The same cap rounds the FFT: its butterflies fuse their products and sums past the portable kernel and round them
+apart on it, so `limit_gemm_path("portable")` changes a transform's last bits as it changes a product's.
 Across other kernels a result differs in the last bits, since the NEON, AVX and AMX kernels fuse each multiply-add
 and the portable one rounds as the compiler does (under the wheels' `-ffp-contract=on`, Clang fuses `c + a·b` there and GCC does not). Past the portable kernel, a complex product runs as one real product of twice the order, `[Re A | −Im A]`
 times `[[Re B, Im B], [Im B, −Re B]]` (by blocks), on that kernel and its threads: each element then sums the
