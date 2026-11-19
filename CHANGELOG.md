@@ -8,6 +8,12 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Changed
+
+- **The einsum products that sum nothing** (`ij,j->ij`, `ij,ij->ij`, `ijk,ik->ijk`) are vectorized on x86-64, where
+  each element's test of a zero operand stayed a branch under GCC (the Linux wheels): `ij,j->ij` of 30 × 134,
+  9.8 → 5.5 µs on eight AVX2 cores. The same bits.
+
 ## 2026.11.18 — 2026-11-19
 
 ### Changed

@@ -1816,7 +1816,15 @@ namespace numerical {
                                            T q) noexcept
     {
       const T product {p * q};
+#ifdef NUMERICAL_X86_COMPILED
+      // One comparison, then −0 added (which leaves every number as it is) or +0 (which turns a zero +0): GCC
+      // vectorizes it, where it kept `p == 0 || q == 0` a branch per element (einsum `ij,j->ij` of 30 × 134 on eight
+      // AVX2 cores, 9.8 → 5.5 µs). On arm64 the two comparisons are the faster (Clang, 40 200 elements: 9.8 µs
+      // against 12.8).
+      return product + (std::min(std::abs(p), std::abs(q)) == T {} ? T {} : -T {});
+#else
       return p == T {} || q == T {} ? product + T {} : product;
+#endif
     }
 
     //! \brief `0 + p·q` of complex numbers as the x86-64 complex tiles round it (\c complex_term::tiles): each part's
