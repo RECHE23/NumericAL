@@ -10,6 +10,11 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ### Fixed
 
+- **A copy of a view holds its own elements** (`copy`, `Tensor.copy`, `copy.copy`, `asarray(…, copy=True)`, `astype`
+  in the same dtype, `from_dlpack(…, copy=True)`), as `ndarray.copy`'s: a transpose's or a slice's copy no longer
+  keeps the array it reads alive (a copy of half the rows of a 4000 × 4000 array held 61 MB, with the 122 MB array
+  behind it). A Tensor holding its own elements row-major is still its own copy: it is never written into. `copy=True`
+  gave the view itself, against the array API's contract.
 - **The small eigenvalues of a graded symmetric matrix keep their relative accuracy**, as LAPACK's: the tridiagonal
   QL iteration (`eigvalsh` and `eigvalsh_tridiagonal` at every order, `eigh` up to order 25 and with
   `method="tridiagonal_ql"`) is LAPACK's `dsteqr`: each block scaled into a safe range, iterated by QL or by QR from

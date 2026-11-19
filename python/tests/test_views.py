@@ -140,6 +140,26 @@ _FLOAT_OPERATIONS = [
 
 @unittest.skipIf(np is None, "NumPy not installed")
 class TestViews(unittest.TestCase):
+
+    def test_a_copy_of_a_view_holds_its_own_elements(self):
+        # A Tensor holding its elements row-major is its own copy; a view's copy (copy(), asarray(copy=True),
+        # astype, from_dlpack(copy=True), copy.copy) holds its elements row-major, without the array the view reads.
+        import copy as copying
+
+        base = numerical.asarray(np.arange(4000.0).reshape(40, 100))
+        for view in (base.T, base[::2], base[:, 3:90]):
+            for copied in (view.copy(), numerical.copy(view), numerical.asarray(view, copy=True),
+                           numerical.astype(view, view.dtype), view.astype(view.dtype),
+                           numerical.from_dlpack(view, copy=True), copying.copy(view), copying.deepcopy(view)):
+                self.assertIsNot(copied, view)
+                self.assertEqual(copied.shape, view.shape)
+                self.assertTrue(np.array_equal(np.asarray(copied), np.asarray(view)))
+                self.assertTrue(np.asarray(copied).flags["C_CONTIGUOUS"])
+            self.assertIs(numerical.astype(view, view.dtype, copy=False), view)
+            self.assertIs(numerical.asarray(view), view)
+        for same in (base.copy(), numerical.copy(base), numerical.asarray(base, copy=True), base.astype(base.dtype),
+                     numerical.from_dlpack(base, copy=True), copying.copy(base)):
+            self.assertIs(same, base)
     def _tensors(self):
         rng = np.random.default_rng(20261114)
         for dtype in ("float64", "float32", "complex128", "complex64"):

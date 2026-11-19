@@ -3476,8 +3476,9 @@ def asarray(obj, dtype=None, *, device=None, copy=None):
             the NumPy type or dtype of that name, or Python's ``float``, ``complex`` or ``bool``; by default an array's own for float32, complex64, complex128 and bool, else float64 (integers included);
             complex128 for a complex number or a list with one, bool for a bool or a list of bools alone, as NumPy's.
         device: ``None`` or ``"cpu"``, the one device.
-        copy: ``None`` or ``True``, the same; ``False`` refuses any `obj` but a Tensor of `dtype` (whose elements a
-            Tensor shares, never writing into them), since the elements are copied into a Tensor.
+        copy: ``None`` reads `obj` as it is; ``True`` gives a Tensor holding its own elements (a view's copied out,
+            as :func:`copy` gives them); ``False`` refuses any `obj` but a Tensor of `dtype` (whose elements a Tensor
+            shares, never writing into them), since the elements are copied into a Tensor.
 
     Returns:
         Tensor: The elements of `obj`, a copy unless `obj` is a Tensor of `dtype` already.
@@ -3508,6 +3509,8 @@ def asarray(obj, dtype=None, *, device=None, copy=None):
     # A float, int, bool or complex, an array (its __array_struct__ or __array_interface__) and a Tensor go to C
     # as they are; a nested list, or another number (a Fraction), through its values. A Tensor or an array's struct
     # first: the abstract Number test below took a third of a small einsum's call.
+    if type(obj) is Tensor and copy and dtype in (None, obj.dtype):  # a view's elements copied out, as copy() gives them
+        return _numerical._materialized(obj)
     if type(obj) is Tensor or hasattr(obj, "__array_struct__"):
         return _asarray(obj, dtype) if dtype is not None else _asarray(obj)
     if isinstance(obj, (list, tuple)):  # floats, ints and complex numbers in one walk in C; anything else read here
@@ -4443,11 +4446,12 @@ absolute.__name__ = "absolute"
 def astype(x, dtype, /, *, copy=True, device=None):
     """`x` in `dtype` (float64, complex128, float32, complex64 or bool), as ``numpy.astype``: a bool is 0 or 1, a number
     is true where it is nonzero (either part of a complex one); a complex `x` has no real dtype (its imaginary part
-    would be lost). The same Tensor when it has `dtype` already, whatever `copy`: a Tensor is never written into, so
-    it serves as its own copy. `device` None or ``"cpu"``."""
+    would be lost). In `dtype` already: with `copy` (the default) as :func:`copy` gives it (the Tensor itself where it
+    holds its elements row-major, a view's elements copied out), without it the Tensor itself. `device` None or
+    ``"cpu"``."""
     if device is not None:
         _cpu_device(device, "astype")
-    return asarray(x, _dtype_name(dtype))
+    return asarray(x, _dtype_name(dtype), copy=True if copy else None)
 
 
 Tensor.astype = lambda self, dtype, *, copy=True, device=None: astype(self, dtype, copy=copy, device=device)
@@ -4703,10 +4707,13 @@ def _contains(self, value):
 _ITEMSIZE = {"float64": 8, "complex128": 16, "float32": 4, "complex64": 8, "bool": 1, "int64": 8}
 
 Tensor.__reduce__ = lambda self: (_rebuilt, (_numerical._tobytes(self), self.shape, self.dtype, _sys.byteorder))
-Tensor.__copy__ = lambda self: self  # a Tensor is never written into: itself is its copy
-Tensor.__deepcopy__ = lambda self, memo: self
-Tensor.copy = lambda self: self
-Tensor.copy.__doc__ = """The tensor itself, as ``ndarray.copy`` would give: a Tensor is never written into."""
+# A Tensor is never written into: one that holds its elements row-major is its own copy; a view's copy holds its own
+# elements, so that it keeps no larger array alive (a slice's base, as ``ndarray.copy`` frees it).
+Tensor.__copy__ = lambda self: _numerical._materialized(self)
+Tensor.__deepcopy__ = lambda self, memo: _numerical._materialized(self)
+Tensor.copy = lambda self: _numerical._materialized(self)
+Tensor.copy.__doc__ = """A copy, as ``ndarray.copy``: the tensor itself where it holds its elements row-major (it is never
+written into), else, for a view, its elements copied out, without the array the view reads."""
 Tensor.tobytes = lambda self: _numerical._tobytes(self)
 Tensor.tobytes.__doc__ = """The elements' bytes, row-major, in this machine's byte order, as ``ndarray.tobytes``."""
 Tensor.transpose = lambda self, *axes: transpose(self, axes[0] if len(axes) == 1 and not isinstance(axes[0], int)
@@ -6081,9 +6088,10 @@ def full_like(a, fill_value, dtype=None, shape=None, *, device=None):
 
 
 def copy(a):
-    """`a` as a Tensor, as ``numpy.copy``: an array-like read into one; a Tensor itself, never written, so it serves
-    as its own copy."""
-    return a if isinstance(a, Tensor) else _tensor(a)
+    """`a` as a Tensor, as ``numpy.copy``: an array-like read into one; a Tensor itself where it holds its elements
+    row-major (never written, it serves as its own copy), else, for a view, its elements copied out, without the array
+    the view reads."""
+    return _numerical._materialized(a) if isinstance(a, Tensor) else _tensor(a)
 
 
 def ravel(a):
@@ -10206,7 +10214,9 @@ def from_dlpack(x, /, *, device=None, copy=None):
         raise ValueError("from_dlpack: a Tensor copies the elements it reads (copy=False cannot hold)")
     if not hasattr(x, "__dlpack__"):
         raise TypeError(f"from_dlpack: {type(x).__name__} has no __dlpack__")
-    return x if isinstance(x, Tensor) and copy is None else _asarray(x)
+    if isinstance(x, Tensor):
+        return x if copy is None else _numerical._materialized(x)
+    return _asarray(x)
 
 
 def _cpu_device(device, name):

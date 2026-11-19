@@ -354,6 +354,20 @@ namespace numerical {
     }
 
     /*!
+     * \brief This tensor holding its own elements row-major and nothing more: itself where they lie so, else its
+     *        row-major copy (\ref data) without the view's base, which no longer stays alive through it (a copy of a
+     *        slice of a large array frees that array, as `ndarray.copy`'s does).
+     * \throws std::bad_alloc If a view finds no memory for its copy.
+     */
+    [[nodiscard]] tensor materialized() const
+    {
+      if (copy_ == nullptr) {
+        return *this;
+      }
+      return tensor {shape_, std::shared_ptr<const buffer<T>>(copy_, &copied_out())};
+    }
+
+    /*!
      * \brief The elements, row-major. A view's (\ref transposed) are copied out by the first call, one thread copying
      *        while any other waits, and kept for the later calls and for the view's copies.
      * \throws std::bad_alloc If a view finds no memory for its copy (a later call tries again).

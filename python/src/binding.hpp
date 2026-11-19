@@ -1560,6 +1560,7 @@ PyObject* module_bandwidth(PyObject* /*self*/, PyObject* obj); // in products.cp
 
 // _tobytes(t) -> bytes: the elements, row-major, in this machine's byte order (a bool one byte, 0 or 1).
 PyObject* module_tobytes(PyObject* /*self*/, PyObject* obj); // in products.cpp
+PyObject* module_materialized(PyObject* /*self*/, PyObject* obj); // in products.cpp
 
 // _frombytes(data, shape, dtype, swapped) -> Tensor: the tensor _tobytes gave `data` for, each element's bytes (each
 // part's, for a complex one) reversed where `swapped` (written in the other byte order).

@@ -3042,3 +3042,16 @@ TEST(sliced_checks_its_ranges_without_overflow)
   const tensor<double> one {line.sliced({7}, {least}, {1}, std::vector<bool> {true})};
   EXPECT(one.shape() == std::vector<std::size_t> {1} && one.data()[0] == 7.0);
 }
+
+// materialized: a tensor holding its elements row-major is itself (the same buffer); a view's is its row-major copy,
+// contiguous, which keeps the view's base no longer (its only owner once the view and the base are gone).
+TEST(a_view_materialized_holds_its_own_elements)
+{
+  const tensor<double> base {numerical::arange(0.0, 2400.0, 1.0).reshaped({40, 60})}; // past a copied slice's 512
+  const tensor<double> same {base.materialized()};
+  EXPECT(same.contiguous() && same.data().data() == base.data().data());
+  const tensor<double> rows {base.sliced({0, 0}, {2, 1}, {20, 60}, std::vector<bool> {true, true})};
+  const tensor<double> copy {rows.materialized()};
+  EXPECT(!rows.contiguous() && copy.contiguous() && copy.shape() == rows.shape() && copy.data() == rows.data());
+  EXPECT(copy.data().data() != base.data().data());
+}

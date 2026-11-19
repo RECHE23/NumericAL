@@ -121,6 +121,8 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     // asarray (returns the same object when the dtype matches — Py_NewRef identity).
     m.raw("determinant", module_determinant, METH_VARARGS,
           "determinant(a) -> number\nThe determinant of a square matrix (float or complex).");
+    m.raw("_materialized", module_materialized, METH_O,
+          "_materialized(t) -> Tensor\nt where its elements lie row-major, else its row-major copy without the view's base.");
     m.raw("_tobytes", module_tobytes, METH_O, "_tobytes(t) -> bytes\nThe elements, row-major, in this machine's byte order.");
     m.raw("_frombytes", module_frombytes, METH_VARARGS,
           "_frombytes(data, shape, dtype, swapped) -> Tensor\nThe tensor of _tobytes's bytes, swapped from the other byte order.");

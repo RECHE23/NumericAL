@@ -553,6 +553,25 @@ PyObject* module_bandwidth(PyObject* /*self*/, PyObject* obj)
     return Py_BuildValue("nn", static_cast<Py_ssize_t>(lower), static_cast<Py_ssize_t>(upper));
 }
 
+// _materialized(t) -> Tensor: t itself where its elements lie row-major in what it holds, else its row-major copy,
+// the view's base no longer held (copy(), asarray(copy=True) and astype(copy=True) of a view).
+PyObject* module_materialized(PyObject* /*self*/, PyObject* obj)
+{
+    const any_tensor* h = as_tensor(obj);
+    if (h == nullptr) {
+        return nullptr;
+    }
+    if (std::visit([](const auto& t) { return t.contiguous(); }, *h)) {
+        return Py_NewRef(obj);
+    }
+    try {
+        return std::visit([](const auto& t) { return wrap(any_tensor {t.materialized()}); }, *h);
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
 // _tobytes(t) -> bytes.
 PyObject* module_tobytes(PyObject* /*self*/, PyObject* obj)
 {
