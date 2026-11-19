@@ -10,6 +10,12 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ### Changed
 
+- **Products whose width is not a whole number of tiles, or with fewer rows than one**, pack their operands by rows:
+  B's last sliver row by row, where each element was tested against its width (0.48 ns an element, most of a thin
+  product on the AMX), and A's last sliver of the AMX's tiles by blocks of 4 × 4 (`float`) or 4 × 2 (`double`), past
+  the L1 from the whole slivers' size, where it was read element by element down its columns. On an M1 Pro, one core,
+  `float32` 21 × 639 by 639 × 105 39 → 16 µs and order 100 14 → 9 µs, `float64` 21 × 639 by 639 × 105 30 → 25 µs;
+  on one AVX2 core, `float32` 21 × 639 by 639 × 639 295 → 224 µs. The same bits.
 - **The einsum products that sum nothing** (`ij,j->ij`, `ij,ij->ij`, `ijk,ik->ijk`) are vectorized on x86-64, where
   each element's test of a zero operand stayed a branch under GCC (the Linux wheels): `ij,j->ij` of 30 × 134,
   9.8 → 5.5 µs on eight AVX2 cores. The same bits.
