@@ -3805,6 +3805,33 @@ namespace numerical::detail {
   template <typename T>
   inline constexpr std::size_t few_rows_neon_columns {std::is_same_v<T, float> ? 16 : 8};
 
+  /*!
+   * \brief Whether the AMX path leaves a `float` product of \ref few_rows_on_arm64's rows to the AMX: from 2^16
+   *        multiply-adds and 32 columns. Since its operands' last slivers are packed by rows and B's read in place, the
+   *        AMX outran the NEON rows there (M1 Pro, 259 random products of 1 and 5 to 15 rows: one core 0.66 of the
+   *        time, eight threads 0.86); below 2^16, up to five times as long on the AMX, and narrower, one partial tile
+   *        deep, up to 3.5 times (5 × 935 by 935 × 15: 4.8 µs by rows, 16.8 on the AMX).
+   */
+  template <typename T>
+  requires std::same_as<T, float>
+  [[nodiscard]] constexpr bool few_rows_left_to_amx(std::size_t m,
+                                                    std::size_t n,
+                                                    std::size_t k) noexcept
+  {
+    return n >= 32 && m * n * k >= (std::size_t {1} << 16U);
+  }
+
+  //! \brief \ref few_rows_left_to_amx of `double`: never. The AMX runs these products on the calling thread alone, and
+  //!        the NEON rows on every thread outran it from four threads (1.5 to 2.3 times as fast), on one 0.86 as fast.
+  template <typename T>
+  requires std::same_as<T, double>
+  [[nodiscard]] constexpr bool few_rows_left_to_amx(std::size_t /*m*/,
+                                                    std::size_t /*n*/,
+                                                    std::size_t /*k*/) noexcept
+  {
+    return false;
+  }
+
   //! \brief \ref few_rows of a product the NEON and AMX paths take so (\ref few_rows_on_arm64). \return Whether it ran.
   template <few_rows_real T>
   [[nodiscard]] bool gemm_few_rows_arm64(std::size_t m,
@@ -3819,7 +3846,8 @@ namespace numerical::detail {
                                          c_start     start)
   {
     const gemm_path path {gemm_path_current()};
-    if (n <= gemm_rows_columns || (path != gemm_path::neon && path != gemm_path::amx) || !few_rows_on_arm64<T>(m)) {
+    if (n <= gemm_rows_columns || (path != gemm_path::neon && path != gemm_path::amx) || !few_rows_on_arm64<T>(m)
+        || (path == gemm_path::amx && few_rows_left_to_amx<T>(m, n, k))) {
       return false;
     }
     few_rows<few_rows_neon_columns<T>, term_rounding::fused>(m, n, k, a, lda, b, ldb, c, ldc, start);

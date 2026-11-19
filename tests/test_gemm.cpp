@@ -369,6 +369,28 @@ namespace {
 
 // A last partial sliver of B read where it lies: one depth panel and two, a last panel of B's last row alone (513),
 // few rows and many, rows closer than a sliver's width (19 + 3 floats: packed whole).
+// A float product of few rows on the AMX path: by rows when narrow (fewer than 32 columns) or small (below 2^16
+// multiply-adds), on the AMX past both; the ascending sum's bits on every path either way.
+TEST(a_float_product_of_few_rows_gives_the_ascending_sum_by_rows_or_on_the_amx)
+{
+  for (const std::size_t m : {std::size_t {1}, std::size_t {6}, std::size_t {12}}) {
+    EXPECT(on_every_path([&] { return product_is_exact<float>(m, 20, 900); }));  // narrow
+    EXPECT(on_every_path([&] { return product_is_exact<float>(m, 165, 400); })); // the AMX's
+    EXPECT(on_every_path([&] { return product_is_exact<float>(m, 40, 20); }));   // small
+  }
+#ifdef NUMERICAL_NEON_COMPILED
+  EXPECT(numerical::detail::few_rows_left_to_amx<float>(12, 165, 333));
+  EXPECT(!numerical::detail::few_rows_left_to_amx<float>(12, 31, 4000));
+  EXPECT(!numerical::detail::few_rows_left_to_amx<float>(12, 40, 100));
+  EXPECT(!numerical::detail::few_rows_left_to_amx<double>(4, 1000, 1000));
+  std::vector<float> a(300, 1.0F);
+  std::vector<float> b(400, 1.0F);
+  std::vector<float> c(48, 0.0F);
+  EXPECT(!numerical::detail::gemm_few_rows_arm64<float>(6, 8, 50, a.data(), 50, b.data(), 8, c.data(), 8,
+                                                        numerical::detail::c_start::zero)); // as narrow as gemm_rows takes
+#endif
+}
+
 TEST(a_last_partial_sliver_of_b_read_in_place_gives_the_ascending_sum)
 {
   for (const auto& [m, n, k] : {std::array<std::size_t, 3> {21, 105, 639}, std::array<std::size_t, 3> {40, 70, 513},

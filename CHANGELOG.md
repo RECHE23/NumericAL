@@ -10,11 +10,15 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ### Changed
 
+- **`float` products of a few rows on the AMX** (1 and 5 to 15 rows), from 2^16 multiply-adds and 32 columns,
+  where they ran by rows on NEON: 12 × 333 by 333 × 165 17.4 → 6.2 µs, 6 × 200 by 200 × 400 14.5 → 6.6 (on one core
+  and on eight alike); on 259 random such products, one core 0.66 of the time, eight threads 0.86. `double` ones stay
+  by rows, which outran the AMX on four threads and more. The same bits.
 - **Thin products on the AMX** (Apple M1 to M4): B's last partial sliver is read where it lies, its last row alone
   packed, and the AMX takes a product from 2^11 multiply-adds (a `float` one unless it has fewer than 8 rows and 24
   columns, a `double` one unless C lies within one tile), where the rule tuned before the packing by rows sent thin
-  products to the vector tile. One M1 Pro core, `float32` 21 × 639 by 639 × 105 16 → 11 µs, 12 × 333 by 333 × 165
-  17 → 5 µs, `float64` 21 × 639 by 639 × 105 25 → 20 µs; on 400 random shapes, one core, `float32` 0.95 of the time,
+  products to the vector tile. One M1 Pro core, `float32` 21 × 639 by 639 × 105 16 → 11 µs, 3 × 309 by 309 × 185
+  8.3 → 5.4 µs, `float64` 21 × 639 by 639 × 105 25 → 20 µs; on 400 random shapes, one core, `float32` 0.95 of the time,
   `float64` level, eight cores 0.93 and 0.99. `make bench-fuzz`, `matmul` against Accelerate 1.12 → 1.20, its worst
   case 0.15 → 0.38. The same bits.
 - **Products whose width is not a whole number of tiles, or with fewer rows than one**, pack their operands by rows:
