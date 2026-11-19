@@ -610,6 +610,9 @@ TEST(a_cap_above_one_bounds_the_threads_of_a_run)
 // alone, to the end. The child exits 0 when its run completed and its sum is right; an alarm ends a hung one.
 TEST(a_forked_child_runs_its_kernels_alone)
 {
+  // The parent's pool first: a child forked before any pool exists starts its own, which serves it (run alone,
+  // this test forked before the busy thread had started one, and its children took their own pools).
+  (void)numerical::detail::thread_pool::shared();
   std::atomic<bool> stop {false};
   std::thread       busy {[&stop] {
                             while (!stop.load()) {

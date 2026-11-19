@@ -236,10 +236,8 @@ namespace numerical {
           strides.push_back(counts[axis] > 1 ? strides_[axis] * steps[axis] : strides_[axis]);
         }
       }
-      std::size_t count {1};
-      for (const std::size_t extent : shape) {
-        count *= extent;
-      }
+      // Checked: a step of 0 repeats an index any number of times, whose product may pass std::size_t.
+      const std::size_t count {detail::element_count(shape.begin(), shape.end())};
       if (count != 0 && count <= sliced_copy_most) {
         // A few elements copied at once: a view's shared state and its later copy cost more than they spare (M1 Pro,
         // `t[1:3] + 1` of 8 × 8 1.42 → 1.47 µs), and the copy keeps no larger buffer alive.
@@ -420,19 +418,21 @@ namespace numerical {
            std::shared_ptr<const buffer<T>> elements)
       : shape_(std::move(shape)), strides_(std::move(strides)), data_(std::move(elements)), offset_ {offset}
     {
+      // The element count checked first (an extent repeated by a stride of 0 may pass std::size_t): the products
+      // below then stay within it, and an empty shape's never formed past its zero.
+      count_ = detail::element_count(shape_.begin(), shape_.end());
       std::size_t acc       {1};
       bool        row_major {true};
-      for (std::size_t axis {shape_.size()}; axis-- > 0;) {
+      for (std::size_t axis {shape_.size()}; count_ != 0 && axis-- > 0;) {
         // an axis of extent 1 moves nothing
         row_major = row_major && (shape_[axis] < 2 || strides_[axis] == static_cast<std::ptrdiff_t>(acc));
         acc      *= shape_[axis];
       }
-      count_ = acc;
-      if (acc == 0) { // nothing to read: an empty tensor of its own
+      if (count_ == 0) { // nothing to read: an empty tensor of its own
         data_ = std::make_shared<const buffer<T>>();
         finalize();
       }
-      else if (row_major && offset_ == 0 && acc == data_->size()) {
+      else if (row_major && offset_ == 0 && count_ == data_->size()) {
         finalize();
       }
       else {

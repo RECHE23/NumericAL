@@ -10,6 +10,9 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ### Fixed
 
+- **A view's element count is checked**: `tensor::sliced` with a step of 0 (an index repeated) and the view
+  constructor multiplied the extents unchecked, so that a count past `std::size_t` wrapped into an inconsistent
+  tensor (the binding's `_take` among them); they now raise `dimension_error`.
 - **A copy of a view holds its own elements** (`copy`, `Tensor.copy`, `copy.copy`, `asarray(…, copy=True)`, `astype`
   in the same dtype, `from_dlpack(…, copy=True)`), as `ndarray.copy`'s: a transpose's or a slice's copy no longer
   keeps the array it reads alive (a copy of half the rows of a 4000 × 4000 array held 61 MB, with the 122 MB array

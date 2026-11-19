@@ -3039,7 +3039,12 @@ TEST(sliced_checks_its_ranges_without_overflow)
   const tensor<double> line {numerical::arange(0.0, 10.0, 1.0)};
   EXPECT_THROWS((void)line.sliced({0}, {least}, {3}, std::vector<bool> {true}), numerical::index_error);
   EXPECT_THROWS((void)line.sliced({9}, {most}, {2}, std::vector<bool> {true}), numerical::index_error);
-  const tensor<double> one {line.sliced({7}, {least}, {1}, std::vector<bool> {true})};
+  constexpr std::size_t huge    {std::numeric_limits<std::size_t>::max() / 2};
+  const tensor<double>  grid    {numerical::arange(0.0, 4.0, 1.0).reshaped({2, 2})};
+  EXPECT_THROWS((void)grid.sliced({0, 0}, {0, 0}, {huge, 4}, std::vector<bool> {true, true}), numerical::dimension_error); // a step of 0 repeating past std::size_t
+  const tensor<double> repeated {grid.sliced({1, 0}, {0, 1}, {1000, 2}, std::vector<bool> {true, true})};                  // as many as wanted within it
+  EXPECT(repeated.size() == 2000 && repeated.data()[1999] == 3.0);
+  const tensor<double> one      {line.sliced({7}, {least}, {1}, std::vector<bool> {true})};
   EXPECT(one.shape() == std::vector<std::size_t> {1} && one.data()[0] == 7.0);
 }
 
