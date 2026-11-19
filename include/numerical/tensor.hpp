@@ -416,11 +416,11 @@ namespace numerical {
            std::vector<std::ptrdiff_t>      strides,
            std::size_t                      offset,
            std::shared_ptr<const buffer<T>> elements)
-      : shape_(std::move(shape)), strides_(std::move(strides)), data_(std::move(elements)), offset_ {offset}
+      : shape_(std::move(shape)), strides_(std::move(strides)), data_(std::move(elements)), offset_ {offset},
+        count_ {detail::element_count(shape_.begin(), shape_.end())}
     {
-      // The element count checked first (an extent repeated by a stride of 0 may pass std::size_t): the products
-      // below then stay within it, and an empty shape's never formed past its zero.
-      count_ = detail::element_count(shape_.begin(), shape_.end());
+      // count_ checked first (an extent repeated by a stride of 0 may pass std::size_t): the products below then stay
+      // within it, and an empty shape's are never formed past its zero.
       std::size_t acc       {1};
       bool        row_major {true};
       for (std::size_t axis {shape_.size()}; count_ != 0 && axis-- > 0;) {
