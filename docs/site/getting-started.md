@@ -26,9 +26,9 @@ numerical.Tensor([(10+0j), (-2+2j), (-2+0j)], dtype=complex128)
 ```
 
 A `Tensor` passes to NumPy, PyTorch, JAX or CuPy without a copy (`np.asarray(t)`, `np.from_dlpack(t)`,
-`torch.from_dlpack(t)`); `numerical.asarray(array)` copies the other way. {doc}`guide/tensors` says what a `Tensor`
-holds and how the dtypes promote; {doc}`guide/linalg` lists the linear algebra, and {doc}`guide/differences` what a
-program written for NumPy or SciPy meets. `numpy.linalg`'s names are also in `numerical.linalg`, and `numpy.fft`'s
+`torch.from_dlpack(t)`); `numerical.asarray(array)` and `numerical.from_dlpack(x)` (a PyTorch or JAX CPU tensor)
+copy the other way. {doc}`guide/tensors` says what a `Tensor` holds and how the dtypes promote; {doc}`guide/linalg`
+lists the linear algebra, and {doc}`guide/differences` what a program written for NumPy or SciPy meets. `numpy.linalg`'s names are also in `numerical.linalg`, and `numpy.fft`'s
 (`fft`, `ifft`, `fftn`, `rfft`, `irfft`, `fftfreq`…) and `scipy.fft`'s cosine and sine transforms (`dct`, `idct`,
 `dst`, `idst`, `dctn`…) in `numerical.fft`.
 

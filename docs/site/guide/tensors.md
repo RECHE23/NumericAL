@@ -128,7 +128,13 @@ NumPy (`np.asarray`, `np.from_dlpack`), read a transpose where it lies. So is a 
 `t[::-1, 2]`) of more than 512 elements, a product reading its rows apart (`t[:, :k] @ b`) where they lie, NumPy a
 slice along its strides; DLPack shares no reversed one (PyTorch refuses a negative stride) and gives a copy. A smaller
 slice is copied at once. An element-wise operation steps through a slice's elements where they lie; a transpose is
-copied out by blocks first. As NumPy's, a view keeps the whole tensor it reads alive.
+copied out by blocks first. As NumPy's, a view keeps the whole tensor it reads alive; its copy (`t.copy()`,
+`numerical.copy(t)`, `asarray(t, copy=True)`) holds its own elements and keeps nothing else.
+
+The other way, `numerical.asarray(array)` copies a NumPy array (or anything of NumPy's array protocols) into a
+Tensor, and `numerical.from_dlpack(x)` the elements of any DLPack producer on the CPU (a PyTorch or JAX tensor, a
+CuPy array moved to the host), read from its capsule along its strides: a Tensor holds its own elements, so
+`copy=False` is refused.
 
 A tensor is never written: there is no assignment by index (`t[i] = x` raises `TypeError`), so a view never writes
 through to its base, where a NumPy view does. A NumPy array passed in is copied, so writing to it later never reaches a
