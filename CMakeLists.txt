@@ -172,6 +172,11 @@ else()
     endif()
 endif()
 
+if(NUMERICAL_SANITIZE AND NUMERICAL_TSAN)
+    # ThreadSanitizer and AddressSanitizer instrument memory each its own way: one build takes one of them.
+    message(FATAL_ERROR "NUMERICAL_SANITIZE and NUMERICAL_TSAN exclude each other: configure one build for each")
+endif()
+
 if(NUMERICAL_SANITIZE)
     if(MSVC)
         message(FATAL_ERROR "NUMERICAL_SANITIZE requires a GCC/Clang-family compiler")

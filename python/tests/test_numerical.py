@@ -883,6 +883,22 @@ class NumpyInterop(unittest.TestCase):
         with self.assertRaises(numerical.error):
             numerical.asarray(np.array([1j]), dtype="float64")
 
+    def test_an_error_of_the_array_protocols_is_the_objects_own(self):
+        # An error raised by __array_struct__ or __array_interface__ itself reaches the caller as it is; only their
+        # absence is read as "not an array".
+        class Faulty:
+            def __init__(self, which):
+                self.which = which
+
+            def __getattr__(self, name):
+                if name == self.which:
+                    raise RuntimeError(f"{name} failed")
+                raise AttributeError(name)
+
+        for which in ("__array_struct__", "__array_interface__"):
+            with self.assertRaisesRegex(RuntimeError, f"{which} failed"):
+                numerical.asarray(Faulty(which))
+
     def test_array_interface_zero_copy_view(self):
         t = numerical.Tensor([1, 2, 3, 4], shape=(2, 2))
         arr = np.asarray(t)

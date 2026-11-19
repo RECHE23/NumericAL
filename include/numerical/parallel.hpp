@@ -417,17 +417,17 @@ namespace numerical::detail {
 
     /*!
      * \brief The pool, started on first use with a worker per hardware thread beside the caller.
-     * \throws std::system_error If the system starts no thread (the workers already started keep the pool,
-     *         which a later call starts again).
+     * \throws std::system_error If the system starts no thread: the workers already started stay with the one pool,
+     *         which a later call starts on from the first one missing (a new pool each time left them orphans).
      */
     static thread_pool& shared()
     {
-      static thread_pool* const pool {[] {
-                                        auto* const started {new thread_pool {}};
-                                        started->start();
-                                        instance().store(started);
-                                        return started;
-                                      }()};
+      static thread_pool* const created {new thread_pool {}}; // once, kept past a start that failed
+      static thread_pool* const pool    {[] {
+                                           created->start();
+                                           instance().store(created);
+                                           return created;
+                                         }()};
       return *pool;
     }
 
@@ -575,23 +575,32 @@ namespace numerical::detail {
      */
     void start()
     {
+      // From the first worker not started: a start that failed part way keeps those it started. A bell joins bells_
+      // once its thread runs, into room reserved first, so that no thread is left serving a bell destroyed by a throw.
 #if defined(__linux__)
-      const std::vector<cpu_set_t> cores {core_sets()};
+      const std::vector<cpu_set_t>   cores  {core_sets()};
+      const std::vector<std::size_t> wanted {worker_cores(cores.size(), hardware_threads())};
       processor_cores_ = processor_cores(cores);
-      for (const std::size_t core : worker_cores(cores.size(), hardware_threads())) {
-        bells_.push_back(std::make_unique<worker_bell>(core));
-        worker_bell* const bell {bells_.back().get()};
-        std::thread {[this, cores, core, bell] {
+      bells_.reserve(wanted.size());
+      for (std::size_t w {bells_.size()}; w < wanted.size(); ++w) {
+        const std::size_t  core {wanted[w]};
+        auto               bell {std::make_unique<worker_bell>(core)};
+        worker_bell* const rung {bell.get()};
+        std::thread {[this, cores, core, rung] {
                        pin_to_core(cores, core);
-                       serve(*bell);
+                       serve(*rung);
                      }}.detach();
+        bells_.push_back(std::move(bell));
         ++workers_;
       }
 #else
-      for (const std::size_t core : worker_cores(0, hardware_threads())) {
-        bells_.push_back(std::make_unique<worker_bell>(core));
-        worker_bell* const bell {bells_.back().get()};
-        std::thread {[this, bell] { serve(*bell); }}.detach();
+      const std::vector<std::size_t> wanted {worker_cores(0, hardware_threads())};
+      bells_.reserve(wanted.size());
+      for (std::size_t w {bells_.size()}; w < wanted.size(); ++w) {
+        auto               bell {std::make_unique<worker_bell>(wanted[w])};
+        worker_bell* const rung {bell.get()};
+        std::thread {[this, rung] { serve(*rung); }}.detach();
+        bells_.push_back(std::move(bell));
         ++workers_;
       }
 #endif
@@ -657,7 +666,7 @@ namespace numerical::detail {
     }
 
     std::mutex                                lock_;                 //!< Guards current_ and generation_.
-    std::vector<std::unique_ptr<worker_bell>> bells_;                //!< Each worker's, set before it starts.
+    std::vector<std::unique_ptr<worker_bell>> bells_;                //!< Each worker's, added once it runs; read once the pool is published.
     std::shared_ptr<pool_job>                 current_;              //!< The latest run.
     std::atomic<std::size_t>                  generation_ {0};       //!< Counts the runs (polled without the lock).
     std::atomic<bool>                         busy_       {false};   //!< Whether a run holds the pool.

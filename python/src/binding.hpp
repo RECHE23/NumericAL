@@ -3408,11 +3408,16 @@ PyObject* interned_name()
 }
 
 // obj's elements through its __array_struct__ capsule (NumPy arrays and scalars), into `*result`; false when obj
-// has none (or not version 2), with no error set, so the caller reads __array_interface__ instead.
+// has none (or not version 2), with no error set, so the caller reads __array_interface__ instead. An error other
+// than the attribute's absence, raised by the attribute itself, is the caller's: true, `*result` null.
 inline bool asarray_from_struct(PyObject* obj, std::optional<std::size_t> wanted, PyObject** result)
 {
     PyObject* capsule = PyObject_GetAttr(obj, interned_name<array_struct_name>()); // new ref
     if (capsule == nullptr) {
+        if (PyErr_ExceptionMatches(PyExc_AttributeError) == 0) {
+            *result = nullptr;
+            return true;
+        }
         PyErr_Clear();
         return false;
     }
@@ -4201,7 +4206,9 @@ inline PyObject* module_asarray(PyObject* /*self*/, PyObject* args, PyObject* kw
 
     PyObject* ai = PyObject_GetAttr(obj, interned_name<array_interface_name>()); // new ref
     if (ai == nullptr) {
-        PyErr_SetString(sciforge_module_error(), "asarray: object exposes no __array_interface__");
+        if (PyErr_ExceptionMatches(PyExc_AttributeError) != 0) { // absent; another error is the object's, raised as it is
+            PyErr_SetString(sciforge_module_error(), "asarray: object exposes no __array_interface__");
+        }
         return nullptr;
     }
     if (PyDict_Check(ai) == 0) {

@@ -15,6 +15,13 @@ A change that can break code is listed under **Breaking** and held for a month's
   count past one, and the test could then pass. A range of one index takes any step. Python's slices were bounded
   before the call and are unchanged. `numerical::blas`'s strided vectors take an increment of `PTRDIFF_MIN` (its
   negation was undefined, even for one element).
+- **An error raised by an object's `__array_struct__` or `__array_interface__`** reaches the caller as it is
+  (`asarray`, `from_dlpack`), where it was cleared and replaced by "exposes no `__array_interface__`"; only the
+  attribute's absence reads as "not an array".
+- **The thread pool, if the system refuses a thread part way through starting it**, keeps the workers it started and
+  starts the rest at the next call, where each call made a new pool and left the started workers orphaned.
+- **CMake refuses `NUMERICAL_SANITIZE` with `NUMERICAL_TSAN`**, whose instrumentations exclude each other, where the
+  compiler failed on both at once.
 
 ### Changed
 
