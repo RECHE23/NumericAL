@@ -35,6 +35,50 @@
 
 namespace numerical::detail {
 
+  /*!
+   * \brief Copies \p bytes bytes, 4 to 128, from \p from to \p to (apart): by two or four copies of one fixed size
+   *        that overlap where the count is not a multiple of it, the last ending at the last byte. A few elements
+   *        copied by a loop went to the library's `memmove`, a call a row of a tile's edge (one M1 Pro core, `float`
+   *        products of order 100 to 200 on the AMX: 4 to 5 % of their time).
+   */
+  NUMERICAL_ALWAYS_INLINE void copy_few_bytes(const unsigned char* from,
+                                              std::size_t          bytes,
+                                              unsigned char*       to) noexcept
+  {
+    if (bytes >= 64) {
+      std::memcpy(to, from, 32);
+      std::memcpy(to + 32, from + 32, 32);
+      std::memcpy(to + bytes - 64, from + bytes - 64, 32);
+      std::memcpy(to + bytes - 32, from + bytes - 32, 32);
+    }
+    else if (bytes >= 32) {
+      std::memcpy(to, from, 32);
+      std::memcpy(to + bytes - 32, from + bytes - 32, 32);
+    }
+    else if (bytes >= 16) {
+      std::memcpy(to, from, 16);
+      std::memcpy(to + bytes - 16, from + bytes - 16, 16);
+    }
+    else if (bytes >= 8) {
+      std::memcpy(to, from, 8);
+      std::memcpy(to + bytes - 8, from + bytes - 8, 8);
+    }
+    else {
+      std::memcpy(to, from, 4);
+      std::memcpy(to + bytes - 4, from + bytes - 4, 4);
+    }
+  }
+
+  //! \brief \ref copy_few_bytes of \p count elements of \p T, one at least and at most 128 bytes.
+  template <typename T>
+  NUMERICAL_ALWAYS_INLINE void copy_few(const T*    from,
+                                        std::size_t count,
+                                        T*          to) noexcept
+  {
+    static_assert(sizeof(T) >= 4, "an element of four bytes at least");
+    copy_few_bytes(reinterpret_cast<const unsigned char*>(from), count * sizeof(T), reinterpret_cast<unsigned char*>(to)); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the elements' bytes, as memcpy reads them
+  }
+
   //! \brief The side of the tiles a transposing copy goes by (an `einsum` permutation of two axes, the eigenvectors'
   //!        columns): a tile read and a tile written fit the L1 cache, where element by element each write, a row
   //!        apart, missed it (order 1024 on arm64: 4.7 → 1.5 ms; the eigenvectors of order 1024, a tenth of an `eigh`

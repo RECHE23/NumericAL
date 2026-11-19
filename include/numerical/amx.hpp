@@ -481,11 +481,9 @@ namespace numerical::detail {
                                                     }
                                                   }
                                                 };
-    if (cut_width != 0) {
+    if (cut_width != 0) { // each row's elements by copies of fixed sizes (copy_few), where a loop was a call to memmove
       for (std::size_t row {0}; row < rows; ++row) {
-        for (std::size_t e {0}; e < cut_width; ++e) {
-          cut[(row * lanes) + e] = c[(row * ldc) + (whole_halves * lanes) + e];
-        }
+        copy_few(c + (row * ldc) + (whole_halves * lanes), cut_width, cut.data() + (row * lanes));
       }
     }
     each_half([](T* half, std::uint64_t z) { amx<amx_op::ldz>(amx_address(half, z)); });
@@ -500,9 +498,7 @@ namespace numerical::detail {
     each_half([](T* half, std::uint64_t z) { amx<amx_op::stz>(amx_address(half, z)); });
     if (cut_width != 0) {
       for (std::size_t row {0}; row < rows; ++row) {
-        for (std::size_t e {0}; e < cut_width; ++e) {
-          c[(row * ldc) + (whole_halves * lanes) + e] = cut[(row * lanes) + e];
-        }
+        copy_few(cut.data() + (row * lanes), cut_width, c + (row * ldc) + (whole_halves * lanes));
       }
     }
   }

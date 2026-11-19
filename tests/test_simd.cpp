@@ -729,3 +729,35 @@ TEST(the_avx2_and_avx512_kernels_give_the_same_bits)
   EXPECT(same_bits(avx512_dot(lanes_f.data(), ones_f.data(), 64), tree_f));
 #endif
 }
+
+namespace {
+  // copy_few of every count from one element to 128 bytes, from and to arrays whose neighbours hold other values:
+  // each element copied, none beside them written.
+  template <typename T>
+  bool copy_few_copies_each_count()
+  {
+    constexpr std::size_t most {128 / sizeof(T)};
+    std::array<T, most>   from {};
+    for (std::size_t i {0}; i < most; ++i) {
+      from.at(i) = T(static_cast<double>(i) + 1.5);
+    }
+    bool ok {true};
+    for (std::size_t count {1}; count <= most; ++count) {
+      std::array<T, most + 2> to {};
+      to.fill(T(-7.0));
+      numerical::detail::copy_few(from.data(), count, to.data() + 1);
+      ok = ok && to.front() == T(-7.0) && to.at(count + 1) == T(-7.0);
+      for (std::size_t i {0}; i < count; ++i) {
+        ok = ok && to.at(i + 1) == from.at(i);
+      }
+    }
+    return ok;
+  }
+} // namespace
+
+TEST(copy_few_copies_every_count_up_to_128_bytes)
+{
+  EXPECT(copy_few_copies_each_count<float>());
+  EXPECT(copy_few_copies_each_count<double>());
+  EXPECT(copy_few_copies_each_count<std::complex<double>>());
+}
