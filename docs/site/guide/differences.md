@@ -129,7 +129,8 @@ and an `IndexError`), is also a `numpy.exceptions.AxisError`; where `scipy.linal
 - **Views and assignment.** A `Tensor` is immutable: `t[i] = x` raises `TypeError`, so a view never writes through to
   its base, where a NumPy view does. A permutation of its axes (`t.T`, `transpose`…) and a slice (`t[1:3]`,
   `t[::-1, 2]`) are views, as NumPy's, except a slice of 512 elements or fewer, which is copied at once (and so keeps no
-  larger tensor alive); a reshape of a view and a NumPy array passed in are copies.
+  larger tensor alive); a reshape of a view is a view where NumPy's is (its axes join or split without a copy), a
+  copy otherwise, and a NumPy array passed in is a copy.
 - **NumPy's file input and output, printing and datetimes.** No `load`, `save`, `loadtxt` or `genfromtxt`, no
   `set_printoptions`, no datetime functions, no `poly`; and none of the functions that write into an array (`put`,
   `copyto`, `fill_diagonal`, `place`…), which an immutable `Tensor` has no place for.
