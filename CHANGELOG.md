@@ -8,6 +8,8 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+## 2026.11.18 — 2026-11-19
+
 ### Changed
 
 - **`diagonal` is a view** (as `numpy.linalg.diagonal`'s), its elements read where they lie: of a
