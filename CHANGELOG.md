@@ -10,6 +10,13 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ### Changed
 
+- **Thin products on the AMX** (Apple M1 to M4): B's last partial sliver is read where it lies, its last row alone
+  packed, and the AMX takes a product from 2^11 multiply-adds (a `float` one unless it has fewer than 8 rows and 24
+  columns, a `double` one unless C lies within one tile), where the rule tuned before the packing by rows sent thin
+  products to the vector tile. One M1 Pro core, `float32` 21 × 639 by 639 × 105 16 → 11 µs, 12 × 333 by 333 × 165
+  17 → 5 µs, `float64` 21 × 639 by 639 × 105 25 → 20 µs; on 400 random shapes, one core, `float32` 0.95 of the time,
+  `float64` level, eight cores 0.93 and 0.99. `make bench-fuzz`, `matmul` against Accelerate 1.12 → 1.20, its worst
+  case 0.15 → 0.38. The same bits.
 - **Products whose width is not a whole number of tiles, or with fewer rows than one**, pack their operands by rows:
   B's last sliver row by row, where each element was tested against its width (0.48 ns an element, most of a thin
   product on the AMX), and A's last sliver of the AMX's tiles by blocks of 4 × 4 (`float`) or 4 × 2 (`double`), past

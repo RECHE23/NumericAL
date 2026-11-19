@@ -1584,6 +1584,9 @@ namespace numerical::detail {
       return ldb <= amx_in_place_stride;
     }
 
+    //! \brief B's last partial sliver read in place (\ref reads_partial_b_in_place): a tile stores only its columns.
+    static constexpr bool partial_b_in_place {true};
+
     //! \brief A's slivers for this tile, written past the L1 (\ref amx_pack_a).
     static void pack_a(const double* a,
                        std::size_t   lda,
@@ -1624,6 +1627,9 @@ namespace numerical::detail {
     {
       return ldb <= 2 * amx_in_place_stride;
     }
+
+    //! \brief B's last partial sliver read in place (\ref reads_partial_b_in_place): a tile stores only its columns.
+    static constexpr bool partial_b_in_place {true};
 
     static void pack_a(const float* a,
                        std::size_t  lda,
@@ -2498,6 +2504,11 @@ namespace numerical::detail {
                                             Kernel::tile_a_in_place(z, x, z, z, x, z, y, z, z, z);
                                           }};
 
+  //! \brief Whether \p Kernel reads B's last partial sliver in place (\c Kernel::partial_b_in_place): a tile that stores
+  //!        only its columns inside C, its loads past them landing in accumulators it never stores (the AMX's).
+  template <typename Kernel>
+  inline constexpr bool reads_partial_b_in_place {requires { requires Kernel::partial_b_in_place; }};
+
   //! \brief Whether \ref gemm_packed packs A for \p Kernel: unless given packed (\p a_packed).
   template <typename Kernel,
             typename T>
@@ -2599,6 +2610,11 @@ namespace numerical::detail {
     // B's whole slivers unpacked: rows close enough, or few enough rows of A whatever B's stride
     // (Kernel::b_in_place_rows), where the kernel reads B in place at all.
     const bool               in_place {B::template in_place<Kernel>(ldb) || (m <= Kernel::b_in_place_rows && B::template in_place<Kernel>(1))};
+    // B's last partial sliver in place too, where the kernel reads it so (\ref reads_partial_b_in_place): a row's load
+    // of \p nr elements runs past the sliver's last column into B's next row (its rows \p nr apart at least), inside
+    // B, but from B's last row, which alone is packed. Packing the sliver whole took most of a thin product on the AMX
+    // (one M1 Pro core, 21 × 639 by 639 × 104 floats: 12.3 µs, 5.8 for 96 columns).
+    const bool               partial_in_place {in_place && reads_partial_b_in_place<Kernel> && ldb >= nr};
     for (std::size_t jc {0}; jc < n; jc += nc_max) {
       const std::size_t nc      {std::min(nc_max, n - jc)};
       const std::size_t slivers {((nc + nr) - 1) / nr};
@@ -2632,8 +2648,11 @@ namespace numerical::detail {
                          const std::size_t jr    {piece * gemm_slivers_per_task * nr};
                          const std::size_t width {std::min(gemm_slivers_per_task * nr, nc - jr)};
                          const std::size_t whole {in_place ? width - (width % nr) : 0}; // read in place
-                         if (whole < width) { // a partial sliver is packed even so: its outside zero
+                         if (whole < width && !partial_in_place) { // a partial sliver is packed even so: its outside zero
                            B::template pack<nr>(b, ldb, pc, jc + jr + whole, kc, width - whole, packed.b() + ((jr + whole) * kc));
+                         }
+                         else if (whole < width && pc + kc == k) { // B's last row alone
+                           B::template pack<nr>(b, ldb, k - 1, jc + jr + whole, 1, width - whole, packed.b() + ((jr + whole) * kc));
                          }
                        }
                        else {
@@ -2659,6 +2678,19 @@ namespace numerical::detail {
                            const bool direct {in_place && jr + nr <= nc};
                            if (ir + mr < ic_end) { // the next row's tile of C, while this one computes
                              prefetch_next_row<Kernel>(c + ((ir + mr) * ldc) + jc + jr, ldc);
+                           }
+                           if constexpr (reads_partial_b_in_place<Kernel>) {
+                             if (partial_in_place && !direct) { // B's last row, if in this panel, after the others
+                               const std::size_t ahead {pc + kc == k ? kc - 1 : kc};
+                               T* const          tile  {c + (ir * ldc) + jc + jr};
+                               Kernel::tile(ahead, a_tiles + (ir * kc), b + (pc * ldb) + jc + jr, ldb, tile, ldc, std::min(mr, m - ir),
+                                            nc - jr);
+                               if (ahead < kc) { // its accumulators stored and loaded again: each sum goes on from its value
+                                 Kernel::tile(1, a_tiles + (ir * kc) + (ahead * mr), packed.b() + (jr * kc), nr, tile, ldc,
+                                              std::min(mr, m - ir), nc - jr);
+                               }
+                               continue;
+                             }
                            }
                            const T* const    b_tile {direct ? b + (pc * ldb) + jc + jr : packed.b() + (jr * kc)};
                            const std::size_t b_ld {direct ? ldb : nr};
@@ -4306,7 +4338,7 @@ namespace numerical::detail {
    *        less whatever the shape (0.5 to 0.6 up to 2000 × 2000), at 64 or less for 64 rows or fewer (0.4 to 0.9; the
    *        same under GCC 14 and on eight threads); the AVX2 tile for 16 rows or fewer to a depth of 64, or 32 rows to
    *        32 (0.2 to 0.8, six cores too), as wide as \ref plain_loop_least_width. The AMX's packing pays from 16
-   *        rows; a product it declines (`amx_suits`) runs the NEON tile's rule, where it went packed on that tile
+   *        rows; a product below that (`amx_outruns_plain_loop`) runs the NEON tile's rule, where it went packed on that tile
    *        (one M1 Pro core, 8 to 15 rows to a depth of 8 to 64: 0.34 to 0.74 of the time).
    */
   [[nodiscard]] inline bool plain_loop_pays(std::size_t m,
@@ -4317,7 +4349,7 @@ namespace numerical::detail {
 #ifdef NUMERICAL_NEON_COMPILED
     bool neon_tile                        {path == gemm_path::neon};
 #  ifdef NUMERICAL_AMX_COMPILED
-    neon_tile = neon_tile || (path == gemm_path::amx && !amx_suits(m, n, k)); // a product the AMX declines: the NEON tile's
+    neon_tile = neon_tile || (path == gemm_path::amx && !amx_outruns_plain_loop(m, n, k)); // the NEON tile's rule below
 #  endif
     if (neon_tile) {
       return k <= 16 || (m <= 64 && k <= 64);

@@ -165,58 +165,57 @@ namespace numerical::detail {
   //! \brief The columns of C one AMX tile covers: two X registers of eight `double`.
   inline constexpr std::size_t amx_nr {16};
 
-  //! \brief The fewest rows and columns of C, together, for which the AMX runs a product of fewer than
-  //!        \ref amx_least_work multiply-adds: half its tile's rows and all its columns. A shorter or narrower product
-  //!        computes whole tiles into a scratch block, and with the AMX's start-up (about 0.35 µs a product) it lost
-  //!        to the vector tile up to five times over (M1 Pro, 8 × 166 by 166 × 8: 7.0 µs against 1.3).
-  inline constexpr std::size_t amx_least_extent {16};
-
-  //! \brief The multiply-adds from which the AMX runs a product of any shape. With \ref amx_least_extent, against
-  //!        the faster of the AMX and the vector tile on 302 random shapes of 2^13 to 2^22 multiply-adds (M1 Pro), the
-  //!        products took 1.05 times as long in all, the slowest 1.8 times; on the AMX always, 1.09 and 5.5.
-  inline constexpr std::size_t amx_least_work {std::size_t {1} << 16U};
+  //! \brief The multiply-adds from which the AMX runs a product (\ref amx_suits, \ref amx_suits_f32). Since its
+  //!        operands' last partial slivers are packed by rows and B's read in place, a product of 2^11 multiply-adds
+  //!        and more ran faster there than on the vector tile but for the shapes those rules leave out; the rule tuned
+  //!        before (16 rows and columns, or 2^16 multiply-adds) sent the thin ones to the vector tile, up to 5.7 times
+  //!        as long (one M1 Pro core, 15 × 653 by 653 × 132 floats: 46.8 µs on the vector tile, 9.4 on the AMX).
+  inline constexpr std::size_t amx_least_work {std::size_t {1} << 11U};
 
   /*!
-   * \brief Whether the AMX runs a product of \p m × \p k by \p k × \p n (\ref amx_least_extent, \ref amx_least_work),
+   * \brief Whether the AMX runs a `double` product of \p m × \p k by \p k × \p n: \ref amx_least_work multiply-adds,
    *        a C within one tile's rows and columns (\ref amx_mr × \ref amx_nr) excepted however deep: the AMX computes
    *        the whole tile at every step of the depth; the vector tile computes the same chains of fused multiply-adds,
-   *        the same bits. One M1 Pro core, on 500 such shapes from 2^16 multiply-adds (2 to 31 rows, 2 to 15 columns,
-   *        depths 256 to 4096), against the faster of the two: the vector tile 1.075 times as long in all (the slowest
-   *        1.76, a C near a whole tile), the AMX 1.37; a symmetric product's triangle of order 4 to 15, the vector tile
-   *        the faster at every depth. On 300 random shapes of 2^13 to 2^22 multiply-adds, 1.043 times as long in all,
-   *        where 1.052 without the exception.
+   *        the same bits. One M1 Pro core, on 281 random shapes of 2^10 to 2^23 multiply-adds: 1.046 times the faster
+   *        of the two in all, the slowest 2.5; by the rule tuned before, 1.15 and 3.4.
    */
   [[nodiscard]] constexpr bool amx_suits(std::size_t m,
                                          std::size_t n,
                                          std::size_t k) noexcept
   {
     const bool within_one_tile {m < amx_mr && n < amx_nr};
-    return (m >= amx_least_extent && n >= amx_least_extent) || (m * n * k >= amx_least_work && !within_one_tile);
+    return m * n * k >= amx_least_work && !within_one_tile;
   }
 
   //! \brief The rows and columns of one `float` tile of \ref amx_full_tile_f32: four 16 × 16 accumulators.
   inline constexpr std::size_t amx_f32_side {32};
 
-  //! \brief The fewest columns of a `float` product the AMX runs by \ref amx_suits_f32's work alone.
-  inline constexpr std::size_t amx_f32_least_width {28};
-
   /*!
-   * \brief Whether the AMX runs a `float` product of \p m × \p k by \p k × \p n (\ref amx_suits): a width of whole
-   *        tiles; or \ref amx_least_extent rows, \ref amx_f32_least_width columns and \ref amx_least_work
-   *        multiply-adds; or 64 rows to a depth of 64. Below, partial tiles of four 16 × 16 accumulators took up to
-   *        2.4 times the NEON tile's time. One M1 Pro core, against the faster of the two, on the AMX always then by
-   *        this rule: 168 shapes of 8 to 128 rows and columns, depths 16 to 256, 1.08 then 1.04 times as long in
-   *        all; 149 of 12 to 200 rows, 12 to 90 columns, depths 32 to 512, 1.14 then 1.02; 39 squares of 20 to
-   *        100, as deep or 256 deep, 1.10 then 1.00.
+   * \brief Whether the AMX runs a `float` product of \p m × \p k by \p k × \p n: \ref amx_least_work multiply-adds,
+   *        fewer than 8 rows and 24 columns excepted (the vector tile up to 1.6 times as fast). One M1 Pro core, on
+   *        281 random shapes: 1.033 times the faster of the AMX and the vector tile in all, the slowest 1.9; by the
+   *        rule tuned before (a width of whole tiles, or 16 rows, 28 columns and 2^16 multiply-adds, or 64 rows to a
+   *        depth of 64), 1.38 and 5.7.
    */
   [[nodiscard]] constexpr bool amx_suits_f32(std::size_t m,
                                              std::size_t n,
                                              std::size_t k) noexcept
   {
-    const bool whole_tiles   {n % amx_f32_side == 0};
-    const bool wide          {m >= amx_least_extent && n >= amx_f32_least_width && m * n * k >= amx_least_work};
-    const bool tall_and_deep {m >= 64 && k >= 64};
-    return amx_suits(m, n, k) && (whole_tiles || wide || tall_and_deep);
+    return m * n * k >= amx_least_work && (m >= 8 || n >= 24);
+  }
+
+  /*!
+   * \brief Whether the AMX's packing outruns the plain loop for a `double` product of \p m × \p k by \p k × \p n
+   *        (\ref plain_loop_pays): 16 rows and columns, or 2^16 multiply-adds outside one tile. Below, a shallow
+   *        product took up to three times as long packed on the AMX as in the plain loop (one M1 Pro core, 280 × 14
+   *        by 14 × 11: 2.5 µs in the plain loop, 7.8 packed).
+   */
+  [[nodiscard]] constexpr bool amx_outruns_plain_loop(std::size_t m,
+                                                      std::size_t n,
+                                                      std::size_t k) noexcept
+  {
+    const bool within_one_tile {m < amx_mr && n < amx_nr};
+    return (m >= 16 && n >= 16) || (m * n * k >= (std::size_t {1} << 16U) && !within_one_tile);
   }
 
   //! \brief The longest rows of B the AMX reads in place, unpacked: X loads a row's 16 elements as they lie, and

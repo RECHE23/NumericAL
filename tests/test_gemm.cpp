@@ -336,6 +336,49 @@ TEST(packed_product_equals_the_ascending_sum_to_the_bit)
   EXPECT(product_is_exact<int>(3, numerical::detail::gemm_rows_columns + 16, 30));                                   // wider, below the packing threshold
 }
 
+namespace {
+  // gemm of B whose rows lie n + 3 apart, the three elements between them NaN, against the ascending sum of B
+  // contiguous: a last partial sliver of B read in place (the AMX's tiles) loads past its last column into those
+  // NaNs and into the next row, and none of it reaches C; B's last row, packed, after the others.
+  template <typename T>
+  bool partial_sliver_in_place_is_exact(std::size_t m,
+                                        std::size_t n,
+                                        std::size_t k)
+  {
+    const std::size_t ldb {n + 3};
+    std::vector<T>    a(m * k);
+    std::vector<T>    b(k * n);
+    std::vector<T>    spaced(k * ldb, std::numeric_limits<T>::quiet_NaN());
+    for (std::size_t i {0}; i < a.size(); ++i) {
+      a[i] = fill<T>(i);
+    }
+    for (std::size_t i {0}; i < b.size(); ++i) {
+      b[i]                               = fill<T>((i * 7) + 3);
+      spaced[((i / n) * ldb) + (i % n)]  = b[i];
+    }
+    std::vector<T> c(m * n, std::numeric_limits<T>::quiet_NaN());
+    numerical::detail::gemm(m, n, k, a.data(), k, spaced.data(), ldb, c.data(), n, numerical::detail::c_start::zero);
+    const std::vector<T> want {reference(m, n, k, a, b)};
+    bool                 same {true};
+    for (std::size_t e {0}; e < c.size(); ++e) {
+      same = same && same_bits(c[e], want[e]);
+    }
+    return same;
+  }
+} // namespace
+
+// A last partial sliver of B read where it lies: one depth panel and two, a last panel of B's last row alone (513),
+// few rows and many, rows closer than a sliver's width (19 + 3 floats: packed whole).
+TEST(a_last_partial_sliver_of_b_read_in_place_gives_the_ascending_sum)
+{
+  for (const auto& [m, n, k] : {std::array<std::size_t, 3> {21, 105, 639}, std::array<std::size_t, 3> {40, 70, 513},
+                                std::array<std::size_t, 3> {130, 47, 100}, std::array<std::size_t, 3> {130, 19, 600},
+                                std::array<std::size_t, 3> {5, 41, 1025}}) {
+    EXPECT(on_every_path([&] { return partial_sliver_in_place_is_exact<double>(m, n, k); }));
+    EXPECT(on_every_path([&] { return partial_sliver_in_place_is_exact<float>(m, n, k); }));
+  }
+}
+
 // float products on every path, the AMX's among them: whole and partial tiles in place, a last column cutting a
 // tile's first half row or its second, A's slivers by streaming stores to a depth past a multiple of four.
 TEST(float_products_equal_the_ascending_sum_to_the_bit)
@@ -432,11 +475,12 @@ namespace {
 TEST(a_left_operand_packed_once_gives_gemm_s_bits_on_every_path)
 {
   // Packed for the tile in use (the depth of an LU panel, 32 or 64, and a deep one); a narrow product whose
-  // tile differs from the hint's (on the AMX path, too few columns to suit it) or that the plain loop takes (7 × 1
-  // and 20 × 2 by 64: a packing read there would round otherwise); a
-  // depth past one panel, and other scalars, read A in place.
+  // tile differs from the hint's or that the plain loop takes (7 × 1 and 20 × 2 by 64: a packing read there would
+  // round otherwise); a C within one AMX tile (20 × 15: the NEON tile's on the AMX path); a depth past one panel,
+  // and other scalars, read A in place.
   for (const auto& [m, hint, n, k] : {std::array<std::size_t, 4> {936, 64, 64, 64}, {936, 64, 200, 64}, {300, 32, 97, 32},
-                                      {130, 64, 3, 64}, {7, 64, 1, 64}, {20, 64, 2, 64}, {7, 64, 5, 4}, {260, 64, 64, 300}, {64, 64, 64, 256}}) {
+                                      {130, 64, 3, 64}, {7, 64, 1, 64}, {20, 64, 2, 64}, {7, 64, 5, 4}, {260, 64, 64, 300}, {64, 64, 64, 256},
+                                      {20, 15, 15, 64}}) {
     EXPECT(shared_left_equals_gemm<double>(m, hint, n, k));
   }
   EXPECT(shared_left_equals_gemm<float>(200, 64, 64, 64));

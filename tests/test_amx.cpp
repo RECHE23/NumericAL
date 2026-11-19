@@ -104,32 +104,43 @@ namespace {
 // On the AMX path a double matrix of 2^15 to 2^18 elements is multiplied by a vector on the AMX, its lanes to the
 // bit, with rows and columns past a multiple of eight. Smaller, larger, rows longer than a dot chunk, or off the AMX
 // path, the NEON rows answer, within a rounding.
-// A double product runs on the AMX from 16 rows and columns, or from 2^16 multiply-adds unless C lies within one tile
-// (fewer than 32 rows and 16 columns), however deep: the vector tile's chains, the same bits, are faster there.
+// A double product runs on the AMX from 2^11 multiply-adds unless C lies within one tile (fewer than 32 rows and 16
+// columns), however deep: the vector tile's chains, the same bits, are faster there.
 TEST(a_double_product_runs_on_the_amx_where_its_tiles_pay)
 {
   using numerical::detail::amx_suits;
-  EXPECT(amx_suits(16, 16, 4));        // rows and columns enough
-  EXPECT(!amx_suits(8, 8, 512));       // too little work
+  EXPECT(!amx_suits(16, 16, 4));       // too little work
+  EXPECT(amx_suits(16, 16, 8));        // 2^11 multiply-adds
   EXPECT(!amx_suits(8, 8, 1024));      // within one tile, however deep
   EXPECT(!amx_suits(31, 15, 4096));    // the largest C within one
   EXPECT(amx_suits(32, 15, 1024));     // a tile's rows
   EXPECT(amx_suits(64, 2, 2048));      // tall, enough work
-  EXPECT(amx_suits(4, 16, 4096));      // a tile's columns
-  EXPECT(!amx_suits(4, 16, 512));      // a tile's columns, too little work
+  EXPECT(amx_suits(4, 16, 512));       // a tile's columns, enough work
+  EXPECT(!amx_suits(4, 16, 16));       // a tile's columns, too little work
 }
 
-// A float product runs on the AMX at a width of whole tiles, when wide with enough work, or tall and deep.
+// A float product runs on the AMX from 2^11 multiply-adds, unless it has fewer than 8 rows and 24 columns.
 TEST(a_float_product_runs_on_the_amx_where_its_tiles_pay)
 {
   using numerical::detail::amx_suits_f32;
-  EXPECT(amx_suits_f32(16, 32, 16));   // whole tiles
-  EXPECT(amx_suits_f32(40, 60, 128));  // wide, enough work
-  EXPECT(!amx_suits_f32(40, 40, 40));  // wide, too little work
-  EXPECT(amx_suits_f32(128, 24, 64));  // tall and deep
-  EXPECT(!amx_suits_f32(128, 24, 16)); // tall, shallow
-  EXPECT(!amx_suits_f32(24, 24, 256)); // narrow
-  EXPECT(!amx_suits_f32(8, 8, 8));     // the AMX's own floor
+  EXPECT(amx_suits_f32(16, 32, 16));   // enough work
+  EXPECT(amx_suits_f32(40, 40, 40));   // square
+  EXPECT(amx_suits_f32(8, 8, 32));     // 8 rows, 2^11 multiply-adds
+  EXPECT(!amx_suits_f32(8, 8, 31));    // too little work
+  EXPECT(amx_suits_f32(2, 24, 64));    // few rows, 24 columns
+  EXPECT(!amx_suits_f32(7, 23, 4096)); // fewer than 8 rows and 24 columns, however deep
+}
+
+// The plain loop's rule for a double product the AMX would not outrun packed: from 16 rows and columns, or from
+// 2^16 multiply-adds unless C lies within one tile, the AMX's packing pays.
+TEST(the_amx_outruns_the_plain_loop_where_its_packing_pays)
+{
+  using numerical::detail::amx_outruns_plain_loop;
+  EXPECT(amx_outruns_plain_loop(16, 16, 4));      // rows and columns enough
+  EXPECT(!amx_outruns_plain_loop(8, 8, 512));     // too little work
+  EXPECT(!amx_outruns_plain_loop(31, 15, 4096));  // within one tile
+  EXPECT(amx_outruns_plain_loop(4, 16, 4096));    // 2^16 multiply-adds
+  EXPECT(!amx_outruns_plain_loop(4, 16, 512));    // below
 }
 
 TEST(matrix_times_vector_runs_on_the_amx_lanes_where_it_pays)
