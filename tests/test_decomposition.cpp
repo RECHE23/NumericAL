@@ -897,12 +897,105 @@ TEST(symmetric_eigen_reads_the_lower_triangle_and_bounds_its_iterations)
     EXPECT(approx_equal(e.values(), symmetric_eigen {mirrored, method}.values()));
     EXPECT(approx_equal(reconstruct(e), mirrored));
   }
-  numerical::buffer<double> a {2.0, 1.0, 0.5, 1.0, 3.0, -1.0, 0.5, -1.0, 4.0};
-  numerical::buffer<double> v {1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0};
+  numerical::buffer<double> a     {2.0, 1.0, 0.5, 1.0, 3.0, -1.0, 0.5, -1.0, 4.0};
+  numerical::buffer<double> v     {1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0};
   EXPECT_THROWS(numerical::detail::cyclic_jacobi(a, v, 3, 1), numerical::convergence_error);
-  numerical::buffer<double> d {2.0, 3.0, 4.0};
-  numerical::buffer<double> e {1.0, -1.0, 0.0};
-  EXPECT_THROWS(numerical::detail::tridiagonal_ql(d, e, v, 3, 1), numerical::convergence_error);
+  numerical::buffer<double> d     {2.0, 3.0, 4.0};
+  numerical::buffer<double> e     {1.0, -1.0, 0.0};
+  EXPECT_THROWS(numerical::detail::tridiagonal_ql(d, e, v, 3, 0), numerical::convergence_error);      // by QL
+  numerical::buffer<double> up    {4.0, 3.0, 2.0};
+  numerical::buffer<double> upper {-1.0, 1.0, 0.0};
+  EXPECT_THROWS(numerical::detail::tridiagonal_ql(up, upper, v, 3, 0), numerical::convergence_error); // by QR
+}
+
+namespace {
+  // [c s; −s c] [a b; b c'] [c −s; s c] = diag(larger, smaller), |larger| ≥ |smaller|, within a few roundings of
+  // the matrix's largest entry.
+  bool diagonalizes(double a,
+                    double b,
+                    double c)
+  {
+    const numerical::detail::symmetric_two_by_two r      {numerical::detail::symmetric_eigen_2x2(a, b, c)};
+    const double                                  ra     {(r.c * a) + (r.s * b)};
+    const double                                  rb     {(r.c * b) + (r.s * c)};
+    const double                                  sa     {(-r.s * a) + (r.c * b)};
+    const double                                  sb     {(-r.s * b) + (r.c * c)};
+    const double                                  top    {(ra * r.c) + (rb * r.s)};
+    const double                                  off    {(-ra * r.s) + (rb * r.c)};
+    const double                                  bottom {(-sa * r.s) + (sb * r.c)};
+    const double                                  size   {std::max({std::abs(a), std::abs(b), std::abs(c)})};
+    const double                                  near   {8.0 * std::numeric_limits<double>::epsilon() * size};
+    return std::abs(top - r.larger) <= near && std::abs(bottom - r.smaller) <= near && std::abs(off) <= near
+           && std::abs(r.larger) >= std::abs(r.smaller) && std::abs((r.c * r.c) + (r.s * r.s) - 1.0) <= 4e-16;
+  }
+} // namespace
+
+// LAPACK's dlaev2 and dlartg as the tridiagonal iteration takes them, every branch: a spread wider than, narrower
+// than or equal to the coupling, a sum of either sign or zero, a difference of either sign, no coupling at all.
+TEST(the_two_by_two_eigensystem_and_the_plane_rotation_of_the_tridiagonal_iteration)
+{
+  EXPECT(diagonalizes(3.0, 1.0, 1.0));   // spread equal to the coupling
+  EXPECT(diagonalizes(1.0, 0.1, 2.0));   // wider spread, the second entry the larger
+  EXPECT(diagonalizes(1.0, 2.0, 1.0));   // no spread
+  EXPECT(diagonalizes(-1.0, 0.5, -3.0)); // a negative sum
+  EXPECT(diagonalizes(1.0, 1.0, -1.0));  // a sum of zero
+  EXPECT(diagonalizes(1.0, 0.0, 1.0));   // nothing to rotate
+  EXPECT(diagonalizes(2.0, -3.0, 5.0));  // coupling past the spread, a negative difference
+  const numerical::detail::plane_rotation_real none    {numerical::detail::plane_rotation_to_zero(-2.0, 0.0)};
+  EXPECT(none.c == 1.0 && none.s == 0.0 && none.r == -2.0);
+  const numerical::detail::plane_rotation_real turn    {numerical::detail::plane_rotation_to_zero(-3.0, 4.0)};
+  EXPECT(turn.r == -5.0 && std::abs(turn.c - 0.6) < 1e-16 && std::abs(turn.s + 0.8) < 1e-16);
+  const numerical::detail::plane_rotation_real quarter {numerical::detail::plane_rotation_to_zero(0.0, -2.0)};
+  EXPECT(quarter.c == 0.0 && quarter.s == -1.0 && quarter.r == 2.0);
+}
+
+namespace {
+  // The eigenvalues of the tridiagonal d = gⁱ·(1 + i/7), e = ½√(dᵢ dᵢ₊₁), times `size`, against the same matrix's
+  // eigenvalues at size 1 scaled by `size`: graded down (QL) or up (QR), each to 1e-12 of itself (the smallest, near
+  // 1e-18 of the largest, within 4e-14 as dsteqr's; the iteration before lost every digit of it).
+  bool graded_eigenvalues_keep_their_digits(std::size_t n,
+                                            double      grade,
+                                            double      size,
+                                            bool        upwards)
+  {
+    numerical::buffer<double> d(n);
+    numerical::buffer<double> e(n, 0.0);
+    for (std::size_t i {0}; i < n; ++i) {
+      const std::size_t at {upwards ? n - 1 - i : i};
+      d[at] = std::pow(grade, static_cast<double>(i)) * (1.0 + (static_cast<double>(i) / 7.0));
+    }
+    for (std::size_t i {0}; i + 1 < n; ++i) {
+      e[i] = 0.5 * std::sqrt(d[i] * d[i + 1]);
+    }
+    numerical::buffer<double> unit_d {d};
+    numerical::buffer<double> unit_e {e};
+    numerical::buffer<double> none;
+    numerical::detail::tridiagonal_ql(unit_d, unit_e, none, n, 30 * n);
+    for (std::size_t i {0}; i < n; ++i) {
+      d[i] *= size;
+      e[i] *= size;
+    }
+    numerical::detail::tridiagonal_ql(d, e, none, n, 30 * n);
+    std::ranges::sort(unit_d);
+    std::ranges::sort(d);
+    bool kept {true};
+    for (std::size_t i {0}; i < n; ++i) {
+      kept = kept && std::abs((d[i] / size) - unit_d[i]) <= 1e-12 * std::abs(unit_d[i]);
+    }
+    return kept;
+  }
+} // namespace
+
+// A graded tridiagonal's small eigenvalues keep their relative accuracy, as LAPACK's dsteqr keeps them: graded down
+// or up, at the scale of 1, of 1e200 and of 1e-200 (each block scaled into the safe range, then back).
+TEST(a_graded_tridiagonal_keeps_the_relative_accuracy_of_its_small_eigenvalues)
+{
+  for (const bool upwards : {false, true}) {
+    EXPECT(graded_eigenvalues_keep_their_digits(10, 0.01, 1.0, upwards));
+    EXPECT(graded_eigenvalues_keep_their_digits(10, 0.01, 1e200, upwards));
+    EXPECT(graded_eigenvalues_keep_their_digits(10, 0.01, 1e-200, upwards));
+    EXPECT(graded_eigenvalues_keep_their_digits(24, 0.3, 1.0, upwards));
+  }
 }
 
 // The two methods agree, and the default reaches rounding: a 40 × 40 Hilbert matrix (eigenvalues down to

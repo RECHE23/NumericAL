@@ -5127,85 +5127,276 @@ namespace numerical {
                    });
     }
 
+    //! \brief A plane rotation `[c s; −s c]` and what it leaves of its first argument, as LAPACK's `dlartg` makes it.
+    struct plane_rotation_real
+    {
+      double c; //!< The cosine, 0 or more.
+      double s; //!< The sine.
+      double r; //!< `c f + s g`, of `f`'s sign.
+    };
+
+    //! \brief The rotation that takes `(f, g)` to `(r, 0)`, as LAPACK's `dlartg`: `r` of `f`'s sign, `c` 0 or more;
+    //!        none for `g` 0, a quarter turn for `f` 0. Its length by \ref rotation_length.
+    [[nodiscard]] inline plane_rotation_real plane_rotation_to_zero(double f,
+                                                                    double g) noexcept
+    {
+      if (g == 0.0) {
+        return {1.0, 0.0, f};
+      }
+      const double length {rotation_length(f, g)};
+      const double r      {std::copysign(length, f)};
+      return {std::abs(f) / length, g / r, r};
+    }
+
+    //! \brief The eigenvalues and the rotation of a symmetric 2 × 2 `[a b; b c]`, as LAPACK's `dlaev2`.
+    struct symmetric_two_by_two
+    {
+      double larger;  //!< The eigenvalue of the larger magnitude.
+      double smaller; //!< The other.
+      double c;       //!< `[c s; −s c]` takes the matrix to `diag(larger, smaller)`.
+      double s;       //!< The rotation's sine.
+    };
+
     /*!
-     * \brief The eigenvalues of the symmetric tridiagonal (\p d, \p e) by implicit QL with Wilkinson-type
-     *        shifts (EISPACK's `tql2`), the rotations accumulated into the rows of \p zt.
+     * \brief The eigensystem of `[a b; b c]` as LAPACK's `dlaev2` computes it: the larger eigenvalue in magnitude
+     *        from the sum and the root of the difference, the smaller from the determinant (no cancellation), and the
+     *        rotation `(c, s)` whose first row is the larger's eigenvector.
+     */
+    [[nodiscard]] inline symmetric_two_by_two symmetric_eigen_2x2(double a,
+                                                                  double b,
+                                                                  double c) noexcept
+    {
+      const double sum         {a + c};
+      const double difference  {a - c};
+      const double spread      {std::abs(difference)};
+      const double twice_b     {b + b};
+      const double coupling    {std::abs(twice_b)};
+      const double larger_part {std::abs(a) > std::abs(c) ? a : c};
+      const double other_part  {std::abs(a) > std::abs(c) ? c : a};
+      double       root        {coupling * std::sqrt(2.0)};
+      if (spread > coupling) {
+        root = spread * std::sqrt(1.0 + ((coupling / spread) * (coupling / spread)));
+      }
+      else if (spread < coupling) {
+        root = coupling * std::sqrt(1.0 + ((spread / coupling) * (spread / coupling)));
+      }
+      double larger      {0.5 * root};
+      double smaller     {-0.5 * root};
+      int    sign_of_sum {1};
+      if (sum != 0.0) {
+        larger      = 0.5 * (sum < 0.0 ? sum - root : sum + root);
+        sign_of_sum = sum < 0.0 ? -1 : 1;
+        smaller     = ((larger_part / larger) * other_part) - ((b / larger) * b);
+      }
+      const int    sign_of_difference {difference >= 0.0 ? 1 : -1};
+      const double towards            {difference >= 0.0 ? difference + root : difference - root};
+      double       cs                 {1.0};
+      double       sn                 {0.0};
+      if (std::abs(towards) > coupling) {
+        const double t {-twice_b / towards};
+        sn = 1.0 / std::sqrt(1.0 + (t * t));
+        cs = t * sn;
+      }
+      else if (coupling != 0.0) {
+        const double t {-towards / twice_b};
+        cs = 1.0 / std::sqrt(1.0 + (t * t));
+        sn = t * cs;
+      }
+      if (sign_of_sum == sign_of_difference) {
+        const double swapped {cs};
+        cs = -sn;
+        sn = swapped;
+      }
+      return {larger, smaller, cs, sn};
+    }
+
+    /*!
+     * \brief The eigenvalues of the symmetric tridiagonal (\p d, \p e) by implicit QL or QR as LAPACK's `dsteqr`,
+     *        the rotations accumulated into the rows of \p zt. Each unreduced block, scaled into a safe range, is
+     *        iterated from the end of its smaller diagonal entry (QL down a block graded downwards, QR up one graded
+     *        upwards), an off-diagonal entry dropped against its neighbours' diagonal entries (`e² ≤ ε² |dᵢ dᵢ₊₁|`)
+     *        rather than the matrix's norm, and no shift is subtracted from the whole diagonal: the small eigenvalues
+     *        of a graded matrix keep their relative accuracy. EISPACK's `tql2`, here before, tested against the
+     *        largest entry seen and moved every diagonal entry by the accumulated shift: on `d = gⁱ`, `e` near
+     *        `√(dᵢ dᵢ₊₁)`, the smallest eigenvalues lost every digit (g = 0.01, n = 10; NumPy's 3e-16).
      * \param[in,out] d         The diagonal; on return, the eigenvalues (unsorted).
      * \param[in,out] e         The subdiagonal in `e[0…n-2]`, `e[n-1] = 0`; destroyed.
      * \param[in,out] zt        Row-major `n × n` whose rows are rotated together (`Qᵀ` from
      *                          \ref tridiagonalize); on return, row `j` is the eigenvector of `d[j]`.
      * \param[in]     n         The order.
-     * \param[in]     max_steps The bound of QL steps in all.
-     * \throws convergence_error If a subdiagonal entry is not negligible after \p max_steps steps.
+     * \param[in]     max_steps The bound of iterations in all.
+     * \throws convergence_error If a block has not split after \p max_steps iterations.
      */
     template <typename T>
-    void tridiagonal_ql(buffer<double>&      d,
-                        buffer<double>&      e,
-                        buffer<T>&           zt,
-                        std::size_t          n,
-                        std::size_t          max_steps)
+    void tridiagonal_ql(buffer<double>& d,
+                        buffer<double>& e,
+                        buffer<T>&      zt,
+                        std::size_t     n,
+                        std::size_t     max_steps)
     {
-      const double epsilon {std::numeric_limits<double>::epsilon()};
-      double       shift   {0.0};
-      double       largest {0.0};
-      std::size_t  steps   {0};
+      constexpr double eps          {std::numeric_limits<double>::epsilon() / 2.0}; // LAPACK's dlamch('E')
+      constexpr double eps2         {eps * eps};
+      constexpr double safe_least   {std::numeric_limits<double>::min()};
+      const double     scaled_most  {std::sqrt(1.0 / safe_least) / 3.0};
+      const double     scaled_least {std::sqrt(safe_least) / eps2};
       // The iteration reads only d and e: its rotations of zt's rows are recorded and applied once at the
       // end, in parallel by columns.
       std::vector<row_operation> on_zt;
       const bool                 record {!zt.empty()}; // the eigenvalues alone record nothing
-      for (std::size_t l {0}; l < n; ++l) {
-        largest = std::max(largest, std::abs(d[l]) + std::abs(e[l]));
-        std::size_t m {l};
-        while (std::abs(e[m]) > epsilon * largest) { // e[n-1] = 0 stops it
-          ++m;
+      std::size_t                steps {0};
+      const auto                 negligible = [&](std::size_t i) { // e[i] against d[i] and d[i + 1]
+                                                return e[i] * e[i] <= ((eps2 * std::abs(d[i])) * std::abs(d[i + 1])) + safe_least;
+                                              };
+      std::size_t first {0};
+      while (first < n) {
+        // The next unreduced block [first, last].
+        std::size_t last {first};
+        while (last + 1 < n && std::abs(e[last]) > (std::sqrt(std::abs(d[last])) * std::sqrt(std::abs(d[last + 1]))) * eps) {
+          ++last;
         }
-        while (m > l && std::abs(e[l]) > epsilon * largest) {
-          if (steps == max_steps) {
-            throw convergence_error("symmetric eigendecomposition: QL did not converge within its steps");
-          }
-          ++steps;
-          const double g0   {d[l]};
-          double       p    {(d[l + 1] - g0) / (2.0 * e[l])};
-          double       r    {rotation_length(p, 1.0)};
-          r                  = p < 0.0 ? -r : r;
-          d[l]               = e[l] / (p + r);
-          d[l + 1]           = e[l] * (p + r);
-          const double dl1  {d[l + 1]};
-          const double h0   {g0 - d[l]};
-          for (std::size_t i {l + 2}; i < n; ++i) {
-            d[i] -= h0;
-          }
-          shift             += h0;
-          p                  = d[m];
-          double       c    {1.0};
-          double       c2   {1.0};
-          double       c3   {1.0};
-          const double el1  {e[l + 1]};
-          double       s    {0.0};
-          double       s2   {0.0};
-          for (std::size_t i {m}; i-- > l;) {
-            c3       = c2;
-            c2       = c;
-            s2       = s;
-            const double g {c * e[i]};
-            const double h {c * p};
-            r        = rotation_length(p, e[i]);
-            e[i + 1] = s * r;
-            s        = e[i] / r;
-            c        = p / r;
-            p        = (c * d[i]) - (s * g);
-            d[i + 1] = h + (s * ((c * g) + (s * d[i])));
-            // rows i and i+1 (columns i and i+1 of Z): upper ← c upper − s lower, lower ← c lower + s upper
-            if (record) {
-              on_zt.push_back({row_operation::kind::rotate, i, i + 1, c, -s});
+        if (last + 1 < n) {
+          e[last] = 0.0;
+        }
+        const std::size_t block_first {first};
+        first = last + 1;
+        if (last == block_first) {
+          continue;
+        }
+        double largest {0.0};
+        for (std::size_t i {block_first}; i <= last; ++i) {
+          largest = std::max({largest, std::abs(d[i]), i < last ? std::abs(e[i]) : 0.0});
+        }
+        // Into a safe range, where it lies outside: the squares of the test neither overflow nor vanish.
+        const bool   scaled {largest > scaled_most || largest < scaled_least};
+        const double scale  {largest > scaled_most ? scaled_most : scaled_least};
+        for (std::size_t i {block_first}; scaled && i <= last; ++i) {
+          d[i] = (d[i] / largest) * scale;
+          e[i] = i < last ? (e[i] / largest) * scale : e[i];
+        }
+        if (std::abs(d[last]) >= std::abs(d[block_first])) { // QL: the smaller end first, from the top
+          std::size_t l {block_first};
+          while (l <= last) {
+            std::size_t m {l};
+            while (m < last && !negligible(m)) {
+              ++m;
             }
+            if (m < last) {
+              e[m] = 0.0;
+            }
+            if (m == l) {
+              ++l;
+              continue;
+            }
+            if (m == l + 1) {
+              const symmetric_two_by_two pair {symmetric_eigen_2x2(d[l], e[l], d[l + 1])};
+              if (record) {
+                on_zt.push_back({row_operation::kind::rotate, l, l + 1, pair.c, pair.s});
+              }
+              d[l]     = pair.larger;
+              d[l + 1] = pair.smaller;
+              e[l]     = 0.0;
+              l       += 2;
+              continue;
+            }
+            if (steps == max_steps) {
+              throw convergence_error("symmetric eigendecomposition: QL did not converge within its steps");
+            }
+            ++steps;
+            double g {(d[l + 1] - d[l]) / (2.0 * e[l])};
+            double r {rotation_length(g, 1.0)};
+            g = d[m] - d[l] + (e[l] / (g + std::copysign(r, g)));
+            double s {1.0};
+            double c {1.0};
+            double p {0.0};
+            for (std::size_t i {m}; i-- > l;) {
+              const double              f    {s * e[i]};
+              const double              b    {c * e[i]};
+              const plane_rotation_real turn {plane_rotation_to_zero(g, f)};
+              c = turn.c;
+              s = turn.s;
+              if (i + 1 != m) {
+                e[i + 1] = turn.r;
+              }
+              g        = d[i + 1] - p;
+              r        = ((d[i] - g) * s) + (2.0 * c * b);
+              p        = s * r;
+              d[i + 1] = g + p;
+              g        = (c * r) - b;
+              if (record) {
+                on_zt.push_back({row_operation::kind::rotate, i, i + 1, c, -s});
+              }
+            }
+            d[l] -= p;
+            e[l]  = g;
           }
-          p    = -s * s2 * c3 * el1 * e[l] / dl1;
-          e[l] = s * p;
-          d[l] = c * p;
         }
-        d[l] += shift;
-        e[l]  = 0.0;
+        else { // QR: from the bottom
+          std::size_t l {last};
+          for (;;) { // left once l reaches the block's first entry (below)
+            std::size_t m {l};
+            while (m > block_first && !negligible(m - 1)) {
+              --m;
+            }
+            if (m > block_first) {
+              e[m - 1] = 0.0;
+            }
+            if (m == l) {
+              if (l == block_first) {
+                break;
+              }
+              --l;
+              continue;
+            }
+            if (m + 1 == l) {
+              const symmetric_two_by_two pair {symmetric_eigen_2x2(d[l - 1], e[l - 1], d[l])};
+              if (record) {
+                on_zt.push_back({row_operation::kind::rotate, l - 1, l, pair.c, pair.s});
+              }
+              d[l - 1] = pair.larger;
+              d[l]     = pair.smaller;
+              e[l - 1] = 0.0;
+              if (l < block_first + 2) {
+                break;
+              }
+              l -= 2;
+              continue;
+            }
+            if (steps == max_steps) {
+              throw convergence_error("symmetric eigendecomposition: QL did not converge within its steps");
+            }
+            ++steps;
+            double g {(d[l - 1] - d[l]) / (2.0 * e[l - 1])};
+            double r {rotation_length(g, 1.0)};
+            g = d[m] - d[l] + (e[l - 1] / (g + std::copysign(r, g)));
+            double s {1.0};
+            double c {1.0};
+            double p {0.0};
+            for (std::size_t i {m}; i < l; ++i) {
+              const double              f    {s * e[i]};
+              const double              b    {c * e[i]};
+              const plane_rotation_real turn {plane_rotation_to_zero(g, f)};
+              c = turn.c;
+              s = turn.s;
+              if (i != m) {
+                e[i - 1] = turn.r;
+              }
+              g    = d[i] - p;
+              r    = ((d[i + 1] - g) * s) + (2.0 * c * b);
+              p    = s * r;
+              d[i] = g + p;
+              g    = (c * r) - b;
+              if (record) {
+                on_zt.push_back({row_operation::kind::rotate, i, i + 1, c, s});
+              }
+            }
+            d[l]     -= p;
+            e[l - 1]  = g;
+          }
+        }
+        for (std::size_t i {block_first}; scaled && i <= last; ++i) { // back to the matrix's scale
+          d[i] = (d[i] / scale) * largest;
+          e[i] = i < last ? (e[i] / scale) * largest : e[i];
+        }
       }
       if (record) {
         apply_row_operations(zt, n, on_zt);
