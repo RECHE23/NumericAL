@@ -123,6 +123,8 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
           "determinant(a) -> number\nThe determinant of a square matrix (float or complex).");
     m.raw("_materialized", module_materialized, METH_O,
           "_materialized(t) -> Tensor\nt where its elements lie row-major, else its row-major copy without the view's base.");
+    m.raw("_from_dlpack", module_from_dlpack, METH_O,
+          "_from_dlpack(capsule) -> Tensor\nThe elements of a DLPack capsule (CPU), copied into a Tensor; the capsule consumed.");
     m.raw("_tobytes", module_tobytes, METH_O, "_tobytes(t) -> bytes\nThe elements, row-major, in this machine's byte order.");
     m.raw("_frombytes", module_frombytes, METH_VARARGS,
           "_frombytes(data, shape, dtype, swapped) -> Tensor\nThe tensor of _tobytes's bytes, swapped from the other byte order.");

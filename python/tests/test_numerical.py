@@ -906,6 +906,40 @@ class NumpyInterop(unittest.TestCase):
         self.assertEqual(arr.dtype, np.float64)
         self.assertEqual(arr.tolist(), [[1.0, 2.0], [3.0, 4.0]])
 
+    def test_from_dlpack_reads_a_capsule_alone(self):
+        # A producer of DLPack capsules alone (no NumPy protocol), as PyTorch's and JAX's tensors are: its versioned
+        # capsule, or the classic one where it takes no max_version, read along its strides, every dtype asarray
+        # reads; the capsule consumed (its producer's array freed of the export's reference). A float16 is refused.
+        class Producer:
+            def __init__(self, array, classic=False):
+                self.array, self.classic = array, classic
+
+            def __dlpack__(self, **keywords):
+                if self.classic and keywords:
+                    raise TypeError("no keywords before DLPack 1.0")
+                return self.array.__dlpack__(**keywords)
+
+            def __dlpack_device__(self):
+                return self.array.__dlpack_device__()
+
+        base = np.arange(48.0).reshape(6, 8) / 7
+        arrays = [base, base.T, base[::2, ::-3], base[2, 3:4], np.array(3.5), np.zeros((0, 4)), base.astype(np.float32),
+                  (base + 1j * base).astype(np.complex64), base + 2j, base > 2, np.arange(12).reshape(3, 4),
+                  np.arange(12, dtype=np.uint8)]
+        for array in arrays:
+            for classic in (False, True):
+                got = numerical.from_dlpack(Producer(array, classic))
+                want = numerical.asarray(array)
+                self.assertEqual((got.dtype, got.shape), (want.dtype, want.shape))
+                self.assertTrue(np.array_equal(np.asarray(got), np.asarray(want)))
+        held = np.ones((100, 100))
+        before = sys.getrefcount(held)
+        for _ in range(20):
+            numerical.from_dlpack(Producer(held))
+        self.assertEqual(sys.getrefcount(held), before)
+        with self.assertRaises(TypeError):
+            numerical.from_dlpack(Producer(base.astype(np.float16)))
+
     def test_dlpack_round_trip(self):
         t = numerical.Tensor([1.5, 2.5, 3.5])
         arr = np.from_dlpack(t)

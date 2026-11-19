@@ -170,6 +170,7 @@ inline PyObject* set_cpp_error()
 // --- a minimal DLPack ABI (CPU, classic DLManagedTensor) -------------------
 constexpr int          kDLCPU     = 1;
 constexpr std::uint8_t kDLInt     = 0;
+constexpr std::uint8_t kDLUInt    = 1;
 constexpr std::uint8_t kDLFloat   = 2;
 constexpr std::uint8_t kDLComplex = 5;
 constexpr std::uint8_t kDLBool    = 6;
@@ -4310,6 +4311,104 @@ inline PyObject* module_asarray(PyObject* /*self*/, PyObject* args, PyObject* kw
     return result;
 }
 
+
+// The typestr of DLPack's dtype (native byte order), as __array_interface__ names it; empty for one not read.
+inline std::string dlpack_typestr(const DLDataType& dtype)
+{
+    if (dtype.lanes != 1) {
+        return {};
+    }
+    const std::size_t bytes {static_cast<std::size_t>(dtype.bits) / 8U};
+    char              kind {'\0'};
+    switch (dtype.code) {
+        case kDLFloat: kind = 'f'; break;
+        case kDLComplex: kind = 'c'; break;
+        case kDLInt: kind = 'i'; break;
+        case kDLUInt: kind = 'u'; break;
+        case kDLBool: kind = 'b'; break;
+        default: return {};
+    }
+    if (dtype.bits % 8U != 0U) {
+        return {};
+    }
+    return std::string {bytes == 1 ? '|' : '='} + kind + std::to_string(bytes);
+}
+
+// _from_dlpack(capsule) -> Tensor: the elements of a DLPack capsule ("dltensor_versioned" of DLPack 1, or the
+// classic "dltensor"), a CPU tensor of a dtype asarray reads, along its strides (in elements; none for C order) from
+// its data and byte offset, copied into a Tensor. A capsule refused (another device, dtype or version) is left as it
+// is, its producer's to free; one read is renamed "used_…", as the protocol asks of its consumer, and its deleter
+// called once its elements are copied.
+inline PyObject* module_from_dlpack(PyObject* /*self*/, PyObject* capsule)
+{
+    const bool versioned {PyCapsule_IsValid(capsule, "dltensor_versioned") != 0};
+    if (!versioned && PyCapsule_IsValid(capsule, "dltensor") == 0) {
+        PyErr_SetString(PyExc_TypeError, "from_dlpack: __dlpack__ gave no unused DLPack capsule");
+        return nullptr;
+    }
+    auto* const  managed_versioned {versioned ? static_cast<DLManagedTensorVersioned*>(PyCapsule_GetPointer(capsule, "dltensor_versioned")) : nullptr};
+    auto* const  managed_classic {versioned ? nullptr : static_cast<DLManagedTensor*>(PyCapsule_GetPointer(capsule, "dltensor"))};
+    if (versioned && managed_versioned->version.major != 1U) {
+        PyErr_SetString(PyExc_BufferError, "from_dlpack: a DLPack capsule of a major version other than 1");
+        return nullptr;
+    }
+    const DLTensor& t {versioned ? managed_versioned->dl_tensor : managed_classic->dl_tensor};
+    if (t.device.device_type != kDLCPU) {
+        PyErr_SetString(PyExc_BufferError, "from_dlpack: a tensor on a device other than the CPU");
+        return nullptr;
+    }
+    const std::optional<element_type> element {parse_typestr(dlpack_typestr(t.dtype))};
+    if (!element) {
+        PyErr_SetString(PyExc_TypeError, "from_dlpack: a dtype other than bool, integers, float32/64 and complex64/128");
+        return nullptr;
+    }
+    std::size_t out {0};
+    if (t.ndim < 0 || !output_dtype(*element, std::nullopt, out)) {
+        if (PyErr_Occurred() == nullptr) {
+            PyErr_SetString(PyExc_ValueError, "from_dlpack: a negative rank");
+        }
+        return nullptr;
+    }
+    const auto               rank {static_cast<std::size_t>(t.ndim)};
+    std::vector<std::size_t> shape(rank);
+    std::vector<Py_ssize_t>  strides(rank);
+    std::size_t              total {1};
+    for (std::size_t axis {0}; axis < rank; ++axis) {
+        if (t.shape[axis] < 0) {
+            PyErr_SetString(PyExc_ValueError, "from_dlpack: a negative extent");
+            return nullptr;
+        }
+        shape[axis] = static_cast<std::size_t>(t.shape[axis]);
+    }
+    try {
+        total = numerical::detail::element_count(shape.begin(), shape.end());
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+    auto step = static_cast<Py_ssize_t>(element->size);
+    for (std::size_t axis {rank}; axis-- > 0;) { // bytes apart: DLPack's strides count elements
+        strides[axis] = t.strides != nullptr ? static_cast<Py_ssize_t>(t.strides[axis]) * static_cast<Py_ssize_t>(element->size) : step;
+        step         *= static_cast<Py_ssize_t>(shape[axis]);
+    }
+    if (t.data == nullptr && total > 0) {
+        PyErr_SetString(PyExc_BufferError, "from_dlpack: a null data address");
+        return nullptr;
+    }
+    // Ours from here: renamed so that the capsule's destructor leaves it, and freed by its deleter once copied.
+    if (PyCapsule_SetName(capsule, versioned ? "used_dltensor_versioned" : "used_dltensor") != 0) {
+        return nullptr;
+    }
+    const auto* const address {static_cast<const unsigned char*>(t.data) + t.byte_offset};
+    PyObject* const   result {tensor_from_elements(address, shape, strides, total, *element, out)};
+    if (versioned && managed_versioned->deleter != nullptr) {
+        managed_versioned->deleter(managed_versioned);
+    }
+    else if (!versioned && managed_classic->deleter != nullptr) {
+        managed_classic->deleter(managed_classic);
+    }
+    return result;
+}
 
 // release_memory(): numerical::release_memory, the GIL released while it waits for the pool's workers.
 inline void release_memory()

@@ -10207,8 +10207,10 @@ def empty(shape, dtype="float64", *, device=None):
 
 def from_dlpack(x, /, *, device=None, copy=None):
     """A Tensor of the elements of `x`, an object of the DLPack protocol (``__dlpack__``: a NumPy array, a PyTorch or
-    JAX CPU tensor), as the array API's ``from_dlpack``; `copy` False refused, since a Tensor holds its own
-    elements."""
+    JAX CPU tensor, any producer of a DLPack capsule), as the array API's ``from_dlpack``: its capsule read (DLPack 1's
+    versioned one, else the classic one of a producer that takes no ``max_version``) and its elements copied, of any
+    dtype :func:`asarray` reads, along its strides. A Tensor is itself, or with `copy` as :func:`copy` gives it; `copy`
+    False refused, since a Tensor holds its own elements. BufferError for a tensor on another device."""
     _cpu_device(device, "from_dlpack")
     if copy is False:
         raise ValueError("from_dlpack: a Tensor copies the elements it reads (copy=False cannot hold)")
@@ -10216,7 +10218,11 @@ def from_dlpack(x, /, *, device=None, copy=None):
         raise TypeError(f"from_dlpack: {type(x).__name__} has no __dlpack__")
     if isinstance(x, Tensor):
         return x if copy is None else _numerical._materialized(x)
-    return _asarray(x)
+    try:
+        capsule = x.__dlpack__(max_version=(1, 0))
+    except TypeError:  # a producer before DLPack 1.0's keywords: its classic capsule
+        capsule = x.__dlpack__()
+    return _numerical._from_dlpack(capsule)
 
 
 def _cpu_device(device, name):

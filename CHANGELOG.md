@@ -10,6 +10,11 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ### Fixed
 
+- **`from_dlpack` reads a DLPack capsule**: a producer of capsules alone (PyTorch's and JAX's tensors, any object
+  whose only protocol is `__dlpack__`) was refused for want of NumPy's `__array_interface__`. DLPack 1's versioned
+  capsule is asked first, the classic one of a producer that takes no `max_version` after; a CPU tensor of any dtype
+  `asarray` reads, along its strides, copied into a Tensor, and the capsule consumed (renamed and freed by its
+  deleter, as the protocol asks). Another device raises `BufferError`, another dtype (float16 among them) `TypeError`.
 - **A view's element count is checked**: `tensor::sliced` with a step of 0 (an index repeated) and the view
   constructor multiplied the extents unchecked, so that a count past `std::size_t` wrapped into an inconsistent
   tensor (the binding's `_take` among them); they now raise `dimension_error`.
