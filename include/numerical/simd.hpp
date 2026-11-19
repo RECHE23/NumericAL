@@ -63,9 +63,12 @@ namespace numerical::detail {
       std::memcpy(to, from, 8);
       std::memcpy(to + bytes - 8, from + bytes - 8, 8);
     }
-    else {
+    else { // 4 to 7 bytes; the last copy's offset kept at 0 or more: for elements of 8 bytes, where this branch is
+           // never taken, GCC 13 and 14 under the sanitizers followed it with no byte and saw an offset of -4
+           // (-Warray-bounds, an error in the tests' build)
+      const std::size_t last {std::max<std::size_t>(bytes, 4) - 4};
       std::memcpy(to, from, 4);
-      std::memcpy(to + bytes - 4, from + bytes - 4, 4);
+      std::memcpy(to + last, from + last, 4);
     }
   }
 
