@@ -106,6 +106,28 @@ namespace numerical {
 
   namespace detail {
 
+    /*!
+     * \brief Whether \p count indices from \p first, \p step apart, all lie in `[0, extent)`: none is out for a count
+     *        of 0. In unsigned arithmetic, the last index's distance from \p first never formed where it would pass
+     *        the axis, so that no step and no count overflows (`(count - 1) · step` in `std::ptrdiff_t` did, a step
+     *        of `PTRDIFF_MIN` and a count of 3 among them, and could then pass the test).
+     */
+    [[nodiscard]] constexpr bool range_within(std::size_t    first,
+                                              std::size_t    count,
+                                              std::ptrdiff_t step,
+                                              std::size_t    extent) noexcept
+    {
+      if (count == 0) {
+        return true;
+      }
+      if (first >= extent) {
+        return false;
+      }
+      const std::size_t room      {step >= 0 ? extent - 1 - first : first}; // the indices past first on the step's side
+      const std::size_t magnitude {step >= 0 ? static_cast<std::size_t>(step) : std::size_t {0} - static_cast<std::size_t>(step)};
+      return magnitude == 0 || count - 1 <= room / magnitude;
+    }
+
     //! \brief `a * b`, throwing \ref numerical::dimension_error if the product overflows
     //!        `std::size_t`. Guards dimension/shape products (element counts, allocation
     //!        sizes) against silent wraparound on absurd inputs. The `a != 0` guard also

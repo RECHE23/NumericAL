@@ -538,7 +538,8 @@ namespace numerical::blas {
                                                 std::size_t    length,
                                                 std::ptrdiff_t inc) noexcept
     {
-      return inc > 0 ? i * static_cast<std::size_t>(inc) : (length - 1 - i) * static_cast<std::size_t>(-inc);
+      // The magnitude of a negative inc in unsigned arithmetic: -inc of PTRDIFF_MIN overflows.
+      return inc > 0 ? i * static_cast<std::size_t>(inc) : (length - 1 - i) * (std::size_t {0} - static_cast<std::size_t>(inc));
     }
 
     //! \brief \ref numerical::blas::dot of the real scalar \p T.

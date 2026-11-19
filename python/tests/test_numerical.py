@@ -990,6 +990,10 @@ class TensorProtocol(unittest.TestCase):
             numerical.asarray([[[1.0]]]) @ t
         with self.assertRaises(IndexError):  # a direct call outside the resolved bounds is refused, not read
             numerical._numerical._take(t, [0, 5], [1, 1], [1, 1], [1, 1])
+        least, most = -(2**63), 2**63 - 1  # steps whose product with the count overflowed before the bounds test
+        for steps, counts in (([least, 1], [3, 1]), ([most, 1], [2, 1]), ([1, 1], [most, 1])):
+            with self.assertRaises(IndexError):
+                numerical._numerical._take(t, [0, 0], steps, counts, [1, 1])
 
     def test_an_empty_slice_exports_a_non_null_address(self):
         empty = numerical.asarray([[1.0, 2.0], [3.0, 4.0]])[1:1]

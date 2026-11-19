@@ -7,6 +7,7 @@
 #include <complex>
 #include <cstddef>
 #include <cstdint>
+#include <array>
 #include <limits>
 #include <type_traits>
 #include <utility>
@@ -2765,4 +2766,14 @@ TEST(the_transposing_copies_move_every_element)
     }
     EXPECT(same);
   }
+}
+
+// A vector of one element takes any increment, PTRDIFF_MIN among them: its index formed in unsigned arithmetic.
+TEST(a_vector_of_one_element_takes_any_increment)
+{
+  const std::array<double, 1> x {3.0};
+  const std::array<double, 1> y {-2.0};
+  EXPECT(numerical::blas::dot(1, x.data(), std::numeric_limits<std::ptrdiff_t>::min(), y.data(), -1) == -6.0);
+  EXPECT(numerical::blas::detail::strided(0, 1, std::numeric_limits<std::ptrdiff_t>::min()) == 0);
+  EXPECT(numerical::blas::detail::strided(1, 3, -2) == 2);
 }

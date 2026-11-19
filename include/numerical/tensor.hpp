@@ -223,18 +223,17 @@ namespace numerical {
         if (!static_cast<bool>(keep[axis]) && counts[axis] != 1) {
           throw dimension_error("tensor: sliced drops an axis of one index only");
         }
+        if (!detail::range_within(starts[axis], counts[axis], steps[axis], shape_[axis])) {
+          throw index_error("tensor: a range of sliced leaves its axis");
+        }
         if (counts[axis] != 0) {
-          const auto           extent {static_cast<std::ptrdiff_t>(shape_[axis])};
-          const auto           first  {static_cast<std::ptrdiff_t>(starts[axis])};
-          const std::ptrdiff_t last   {first + (static_cast<std::ptrdiff_t>(counts[axis] - 1) * steps[axis])};
-          if (first >= extent || last < 0 || last >= extent) {
-            throw index_error("tensor: a range of sliced leaves its axis");
-          }
-          offset += first * strides_[axis];
+          offset += static_cast<std::ptrdiff_t>(starts[axis]) * strides_[axis];
         }
         if (static_cast<bool>(keep[axis])) {
+          // A range of one index or none takes no step: any step, PTRDIFF_MIN among them, times the stride would
+          // overflow where the range is not walked.
           shape.push_back(counts[axis]);
-          strides.push_back(strides_[axis] * steps[axis]);
+          strides.push_back(counts[axis] > 1 ? strides_[axis] * steps[axis] : strides_[axis]);
         }
       }
       std::size_t count {1};

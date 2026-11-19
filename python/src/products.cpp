@@ -195,10 +195,11 @@ PyObject* module_take(PyObject* /*self*/, PyObject* args)
     std::vector<std::size_t>    count_v(rank);
     std::vector<std::size_t>    keep_v(rank);
     for (std::size_t a = 0; a < rank; ++a) {
-        const Py_ssize_t dim {static_cast<Py_ssize_t>(shape_of(*h)[a])};
-        const Py_ssize_t last {start_raw[a] + ((count_raw[a] - 1) * step_raw[a])};
-        // The Python side resolves every key in bounds; a direct call that did not is refused, not read.
-        if (count_raw[a] < 0 || (count_raw[a] > 0 && (start_raw[a] < 0 || start_raw[a] >= dim || last < 0 || last >= dim))) {
+        // The Python side resolves every key in bounds; a direct call that did not is refused, not read (whatever its
+        // step and count: numerical::detail::range_within forms no product that overflows).
+        if (count_raw[a] < 0 || (count_raw[a] > 0 && start_raw[a] < 0)
+            || !numerical::detail::range_within(static_cast<std::size_t>(start_raw[a]), static_cast<std::size_t>(count_raw[a]),
+                                                static_cast<std::ptrdiff_t>(step_raw[a]), shape_of(*h)[a])) {
             PyErr_SetString(PyExc_IndexError, "_take: a range leaves its axis");
             return nullptr;
         }

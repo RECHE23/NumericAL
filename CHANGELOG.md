@@ -8,6 +8,14 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Fixed
+
+- **A range of `tensor::sliced` (and the binding's `_take`) is checked without overflow**: `(count − 1) · step` was
+  formed in `std::ptrdiff_t` before the bounds test, undefined for a step of `PTRDIFF_MIN` or `PTRDIFF_MAX` and a
+  count past one, and the test could then pass. A range of one index takes any step. Python's slices were bounded
+  before the call and are unchanged. `numerical::blas`'s strided vectors take an increment of `PTRDIFF_MIN` (its
+  negation was undefined, even for one element).
+
 ### Changed
 
 - **`float` products of a few rows on the AMX** (1 and 5 to 15 rows), from 2^16 multiply-adds and 32 columns,

@@ -3018,3 +3018,27 @@ TEST(vdot_conjugates_in_the_sum)
   }
   EXPECT(refused);
 }
+
+// A range of sliced is checked without overflow: a step of PTRDIFF_MIN or PTRDIFF_MAX past the first index refused,
+// as a count no axis holds; a range of one index takes any step, its stride the axis's.
+TEST(sliced_checks_its_ranges_without_overflow)
+{
+  using numerical::detail::range_within;
+  constexpr std::ptrdiff_t least {std::numeric_limits<std::ptrdiff_t>::min()};
+  constexpr std::ptrdiff_t most  {std::numeric_limits<std::ptrdiff_t>::max()};
+  EXPECT(range_within(9, 0, least, 4)); // no index
+  EXPECT(!range_within(4, 1, 1, 4));    // first outside
+  EXPECT(range_within(1, 3, 1, 4));     // 1, 2, 3
+  EXPECT(!range_within(1, 4, 1, 4));    // 1 to 4
+  EXPECT(range_within(3, 2, -3, 4));    // 3, 0
+  EXPECT(!range_within(3, 2, -4, 4));   // 3, -1
+  EXPECT(range_within(2, 5, 0, 4));     // a step of 0 stays
+  EXPECT(!range_within(0, 3, least, 4));
+  EXPECT(!range_within(3, 3, most, 4));
+  EXPECT(!range_within(0, std::numeric_limits<std::size_t>::max(), 1, 4));
+  const tensor<double> line {numerical::arange(0.0, 10.0, 1.0)};
+  EXPECT_THROWS((void)line.sliced({0}, {least}, {3}, std::vector<bool> {true}), numerical::index_error);
+  EXPECT_THROWS((void)line.sliced({9}, {most}, {2}, std::vector<bool> {true}), numerical::index_error);
+  const tensor<double> one {line.sliced({7}, {least}, {1}, std::vector<bool> {true})};
+  EXPECT(one.shape() == std::vector<std::size_t> {1} && one.data()[0] == 7.0);
+}
