@@ -8,6 +8,8 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+## 2026.11.19 — 2026-11-20
+
 ### Fixed
 
 - **`from_dlpack` reads a DLPack capsule**: a producer of capsules alone (PyTorch's and JAX's tensors, any object
