@@ -3060,3 +3060,62 @@ TEST(a_view_materialized_holds_its_own_elements)
   EXPECT(!rows.contiguous() && copy.contiguous() && copy.shape() == rows.shape() && copy.data() == rows.data());
   EXPECT(copy.data().data() != base.data().data());
 }
+
+namespace {
+  template <typename T>
+  bool same_bits_as_tensor(const tensor<T>& x,
+                           const tensor<T>& y)
+  {
+    return x.shape() == y.shape() && std::memcmp(x.data().data(), y.data().data(), x.size() * sizeof(T)) == 0;
+  }
+
+  // einsum of transposed views against the same of their copies, to the bit: a matrix's sums over one axis, its
+  // diagonal and its permutation read on the matrix under it; a sum of every element, a rank-3 view and the pairs
+  // keep the copy.
+  template <typename T>
+  bool einsum_of_views_gives_their_copies_bits()
+  {
+    const auto made = [](std::vector<std::size_t> extents, int seed) {
+                        const std::size_t    count {numerical::detail::element_count(extents.begin(), extents.end())};
+                        numerical::buffer<T> values(count);
+                        for (std::size_t i {0}; i < count; ++i) {
+                          values[i] = T(std::sin(static_cast<double>((i * 7) + static_cast<std::size_t>(seed))) / 3.0);
+                        }
+                        return tensor<T> {std::move(extents), std::move(values)};
+                      };
+    const tensor<T> a        {made({37, 53}, 1)};
+    const tensor<T> b        {made({53, 41}, 2)};
+    const tensor<T> cube     {made({11, 13, 17}, 3)};
+    const tensor<T> square   {made({29, 29}, 4)};
+    const tensor<T> a_t      {a.transposed({1, 0})};
+    const tensor<T> square_t {square.transposed({1, 0})};
+    const tensor<T> cube_t   {cube.transposed({2, 0, 1})};
+    bool            same     {true};
+    for (const char* spec : {"ij->j", "ij->i", "ij->", "ij->ji", "ij->ij"}) {
+      same = same && same_bits_as_tensor(numerical::einsum(spec, a_t), numerical::einsum(spec, a_t.materialized()));
+    }
+    for (const char* spec : {"ii->i", "ii->"}) {
+      same = same && same_bits_as_tensor(numerical::einsum(spec, square_t), numerical::einsum(spec, square_t.materialized()));
+    }
+    for (const char* spec : {"ijk->k", "ijk->ij", "ijk->"}) {
+      same = same && same_bits_as_tensor(numerical::einsum(spec, cube_t), numerical::einsum(spec, cube_t.materialized()));
+    }
+    same = same && same_bits_as_tensor(numerical::einsum("ji,jk->ik", a_t, b), numerical::einsum("ji,jk->ik", a_t.materialized(), b));
+    return same;
+  }
+} // namespace
+
+TEST(einsum_reads_a_transposed_matrix_where_it_lies_with_its_copys_bits)
+{
+  const tensor<int>      grid            {{3, 4}, numerical::buffer<int> {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}};
+  const tensor<int>      grid_t          {grid.transposed({1, 0})};
+  const tensor<unsigned> unsigned_grid   {{3, 4}, numerical::buffer<unsigned> {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}};
+  const tensor<unsigned> unsigned_grid_t {unsigned_grid.transposed({1, 0})};
+  for (const char* spec : {"ij->j", "ij->", "ij->ji"}) { // integers: the same sums and the same order
+    EXPECT(numerical::einsum(spec, grid_t) == numerical::einsum(spec, grid_t.materialized()));
+    EXPECT(numerical::einsum(spec, unsigned_grid_t) == numerical::einsum(spec, unsigned_grid_t.materialized()));
+  }
+  EXPECT(einsum_of_views_gives_their_copies_bits<double>());
+  EXPECT(einsum_of_views_gives_their_copies_bits<float>());
+  EXPECT(einsum_of_views_gives_their_copies_bits<std::complex<double>>());
+}

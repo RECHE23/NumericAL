@@ -2434,6 +2434,19 @@ namespace numerical {
         throw einsum_error("einsum: number of operands does not match the spec");
       }
 
+      // A transposed matrix read where its elements lie, as the binding's borrowed einsum reads it: summed over one
+      // axis (ij->j, ij->i), its diagonal (ii->i, ii->) or permuted (ij->ji), the einsum of the matrix laid out
+      // under it (tensor::laid_out) with its labels reversed, the view never copied out (one AVX2 core, ij->j of
+      // order 256 84 → 16 µs, 1024 2.4 → 0.22 ms). Each element the same terms in the same order, so the same bits; a
+      // sum of every element (ij->), another rank and a pair would take theirs in another order, and keep the copy.
+      if (operands.size() == 1 && inputs[0].size() == 2 && (!rhs.empty() || inputs[0][0] == inputs[0][1])) {
+        if (std::optional<std::pair<tensor<T>, std::vector<std::size_t>>> lying {operands[0]->laid_out()}) {
+          const std::string                   reversed {inputs[0][1], inputs[0][0]};
+          const std::vector<const tensor<T>*> base     {&lying->first};
+          return einsum_spec<T>(reversed + "->" + rhs, base);
+        }
+      }
+
       // Each label's extent, checked for consistency across every axis it labels.
       std::map<char, std::size_t> sizes;
       for (std::size_t i {0}; i < operands.size(); ++i) {

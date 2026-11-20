@@ -13,6 +13,9 @@ A change that can break code is listed under **Breaking** and held for a month's
 - **Small `float32` products run by rows where `float64`'s do** (shallow, or a few rows a little deep), where they
   packed their operands for the tiles: on random products of that region, an M1 Pro 0.51 of the time (one core and
   eight), eight AVX2 cores 0.68 to 0.88. The same bits.
+- **C++'s `einsum` reads a transposed matrix where it lies** to sum it over one axis, take its diagonal or permute
+  it, where it copied it out first (one AVX2 core, `ij->j` of order 256 84 → 16 µs, 1024 2.4 → 0.22 ms); the
+  binding's borrowed paths read it so already. The same bits.
 
 ### Fixed
 
