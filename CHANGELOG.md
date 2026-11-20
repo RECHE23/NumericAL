@@ -8,6 +8,12 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Changed
+
+- **Small `float32` products run by rows where `float64`'s do** (shallow, or a few rows a little deep), where they
+  packed their operands for the tiles: on random products of that region, an M1 Pro 0.51 of the time (one core and
+  eight), eight AVX2 cores 0.68 to 0.88. The same bits.
+
 ### Fixed
 
 - **`from_dlpack` forms no address an empty tensor would not reach, and checks a capsule's strides**: an empty

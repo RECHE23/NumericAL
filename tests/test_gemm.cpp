@@ -391,6 +391,16 @@ TEST(a_float_product_of_few_rows_gives_the_ascending_sum_by_rows_or_on_the_amx)
 #endif
 }
 
+// A float product the plain loop takes (shallow, or few rows a little deep, as double's rule says) gives the
+// ascending sum's bits on every path, as the packed tiles do.
+TEST(a_shallow_float_product_by_rows_gives_the_ascending_sum)
+{
+  for (const auto& [m, n, k] : {std::array<std::size_t, 3> {100, 9, 3}, std::array<std::size_t, 3> {12, 100, 10},
+                                std::array<std::size_t, 3> {30, 200, 30}, std::array<std::size_t, 3> {300, 70, 16}}) {
+    EXPECT(on_every_path([&] { return product_is_exact<float>(m, n, k); }));
+  }
+}
+
 TEST(a_last_partial_sliver_of_b_read_in_place_gives_the_ascending_sum)
 {
   for (const auto& [m, n, k] : {std::array<std::size_t, 3> {21, 105, 639}, std::array<std::size_t, 3> {40, 70, 513},

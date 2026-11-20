@@ -4392,7 +4392,7 @@ namespace numerical::detail {
     return false;
   }
 
-  //! \brief \ref plain_loop_pays for a product of \p T: `double`'s alone, the one it was measured for.
+  //! \brief \ref plain_loop_pays for a product of \p T: `double`'s and `float`'s, those it was measured for.
   template <typename T>
   [[nodiscard]] bool plain_loop_suits(std::size_t /*m*/,
                                       std::size_t /*n*/,
@@ -4406,6 +4406,20 @@ namespace numerical::detail {
   [[nodiscard]] inline bool plain_loop_suits<double>(std::size_t m,
                                                      std::size_t n,
                                                      std::size_t k) noexcept
+  {
+    return plain_loop_pays(m, n, k);
+  }
+
+  /*!
+   * \brief \ref plain_loop_pays for `float`: `double`'s rule, where the plain loop outran the packed tiles as for
+   *        `double` (random products of its region: 140 on one M1 Pro core, 0.51 of the time, 0.52 on eight threads;
+   *        89 on eight AVX2 cores, 0.75 and 0.68 under GCC, 0.88 and 0.80 under Clang, one thread then eight). The
+   *        same bits.
+   */
+  template <>
+  [[nodiscard]] inline bool plain_loop_suits<float>(std::size_t m,
+                                                    std::size_t n,
+                                                    std::size_t k) noexcept
   {
     return plain_loop_pays(m, n, k);
   }
