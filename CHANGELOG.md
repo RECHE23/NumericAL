@@ -8,6 +8,8 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+## 2026.11.20 — 2026-11-20
+
 ### Changed
 
 - **`sin` and `cos` of float64 are NumericAL's own**, by a table of sin(jπ/32) and cos(jπ/32) (`tools/sine_table.py`)
