@@ -10,6 +10,11 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ### Changed
 
+- **`sin` and `cos` of float64 are NumericAL's own**, by a table of sin(jπ/32) and cos(jπ/32) (`tools/sine_table.py`)
+  and short series, the reduction by π/32 in three parts carried as a pair: within 0.502 ulp of the exact value on
+  80 000 points to 2^20 (macOS's C library 0.86), the same bits on every processor with fused multiply-add and under
+  GCC and Clang alike, and faster: 10⁶ values on one core, an M1 Pro 7.0 → 4.4 ms, an AVX2 core 10.9 → 8.0
+  (16.2 → 8.0 to ±10⁴). Past 2^20, for an infinity or a NaN, and where `exp` takes the C library's, the library's.
 - **Small `float32` products run by rows where `float64`'s do** (shallow, or a few rows a little deep), where they
   packed their operands for the tiles: on random products of that region, an M1 Pro 0.51 of the time (one core and
   eight), eight AVX2 cores 0.68 to 0.88. The same bits.

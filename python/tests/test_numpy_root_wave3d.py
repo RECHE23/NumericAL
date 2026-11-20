@@ -158,9 +158,13 @@ class AgainstNumPy(unittest.TestCase):
 
     def test_windows(self):
         for M in (0, 1, 2, 5, 12, 101, -3, 4.0):
-            for name in ("hamming", "hanning", "blackman", "bartlett"):
-                self.assertSame(lambda: getattr(numerical, name)(M), lambda: getattr(np, name)(M), f"{name} {M}",
-                                ulps=0 if name == "bartlett" else 4)
+            self.assertSame(lambda: numerical.bartlett(M), lambda: np.bartlett(M), f"bartlett {M}")
+            for name in ("hamming", "hanning", "blackman"):
+                # Sums of cosines of magnitude 1 that cancel to small values: within a few roundings of 1, each cosine
+                # rounded by its own library (ours within 0.502 ulp, macOS's 0.86), not of the small result.
+                got, want = np.asarray(getattr(numerical, name)(M)), getattr(np, name)(M)
+                self.assertEqual((got.shape, got.dtype), (want.shape, want.dtype), f"{name} {M}")
+                np.testing.assert_allclose(got, want, rtol=0, atol=4 * np.finfo(np.float64).eps, err_msg=f"{name} {M}")
             for beta in (0.0, 5.0, 14.0):
                 if M == 0 or M < 0:
                     continue

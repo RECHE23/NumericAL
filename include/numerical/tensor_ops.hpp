@@ -1001,6 +1001,60 @@ namespace numerical {
       }
     }
 
+    //! \brief sin (\p Cosine false) or cos of a `double`, as \ref double_sines_into gives it: \ref table_sine to \ref
+    //!        sine_reduction_bound, the C library's past it (and for an infinity or a NaN) and where `exp_by_table` says
+    //!        no.
+    template <bool Cosine>
+    [[nodiscard]] double double_sine(double x)
+    {
+#if defined(NUMERICAL_X86_COMPILED) || (defined(_MSC_VER) && !defined(__clang__))
+      if (!exp_by_table()) {
+        return library_sine<Cosine>::call(x);
+      }
+#endif
+      if (std::fabs(x) <= sine_reduction_bound) {
+        return table_sine<Cosine>(x);
+      }
+      return library_sine<Cosine>::call(x);
+    }
+
+    /*!
+     * \brief sin (\p Cosine false) or cos of the \p count doubles at \p in into \p out, each \ref double_sine's:
+     *        \ref table_sine to \ref sine_reduction_bound (with the FMA instructions on an x86-64 processor,
+     *        \ref run_fused), the C library's past it, element by element (the table's then the library's over every
+     *        element past it took 1.4 times the library's alone: 10⁶ values to ±10⁷, 12 → 17 ms); the C library's
+     *        throughout where `exp_by_table` says no.
+     */
+    template <bool Cosine>
+    void double_sines_into(const double* in,
+                           double*       out,
+                           std::size_t   count)
+    {
+#if defined(NUMERICAL_X86_COMPILED) || (defined(_MSC_VER) && !defined(__clang__))
+      if (!exp_by_table()) {
+        std::transform(in, in + count, out, [](double x) { return library_sine<Cosine>::call(x); });
+        return;
+      }
+#endif
+      run_fused([&](std::size_t) NUMERICAL_INLINE_LAMBDA {
+        for (std::size_t i {0}; i < count; ++i) {
+          out[i] = std::fabs(in[i]) <= sine_reduction_bound ? table_sine<Cosine>(in[i]) : library_sine<Cosine>::call(in[i]);
+        }
+      });
+    }
+
+    //! \brief `sin` of a `double`, as \ref double_sines_into gives it (\ref double_sine).
+    [[nodiscard]] inline double elementary_sin(double x)
+    {
+      return double_sine<false>(x);
+    }
+
+    //! \brief `cos` of a `double`, as \ref double_sines_into gives it (\ref double_sine).
+    [[nodiscard]] inline double elementary_cos(double x)
+    {
+      return double_sine<true>(x);
+    }
+
     //! \brief `sin` of a `float`, as \ref float_sines_into gives it: \ref float_sine of the `double`, rounded once.
     [[nodiscard]] inline float elementary_sin(float x)
     {
@@ -1029,12 +1083,40 @@ namespace numerical {
       return through_doubles(data, shape, &float_sines_into<false>);
     }
 
+    //! \brief `sin` of every one of the row-major doubles at \p data, of shape \p shape: \ref double_sines_into by chunks
+    //!        of \ref elementwise_chunk on the threads.
+    [[nodiscard]] inline tensor<double> sin_of(const double*                   data,
+                                               const std::vector<std::size_t>& shape)
+    {
+      const std::size_t count {element_count(shape.begin(), shape.end())};
+      buffer<double>    out(count);
+      parallel_for((count + elementwise_chunk - 1) / elementwise_chunk, elementwise_chunk, [&](std::size_t c) {
+                     const std::size_t first {c * elementwise_chunk};
+                     double_sines_into<false>(data + first, out.data() + first, std::min(elementwise_chunk, count - first));
+                   });
+      return tensor<double> {shape, std::move(out)};
+    }
+
     //! \brief `cos` of every one of the row-major scalars at \p data, of shape \p shape: `std::cos` of each.
     template <typename T>
     [[nodiscard]] tensor<T> cos_of(const T*                        data,
                                    const std::vector<std::size_t>& shape)
     {
       return parallel_map(data, shape, [](const T& x) { return elementary_cos(x); });
+    }
+
+    //! \brief `cos` of every one of the row-major doubles at \p data, of shape \p shape: \ref double_sines_into by chunks
+    //!        of \ref elementwise_chunk on the threads.
+    [[nodiscard]] inline tensor<double> cos_of(const double*                   data,
+                                               const std::vector<std::size_t>& shape)
+    {
+      const std::size_t count {element_count(shape.begin(), shape.end())};
+      buffer<double>    out(count);
+      parallel_for((count + elementwise_chunk - 1) / elementwise_chunk, elementwise_chunk, [&](std::size_t c) {
+                     const std::size_t first {c * elementwise_chunk};
+                     double_sines_into<true>(data + first, out.data() + first, std::min(elementwise_chunk, count - first));
+                   });
+      return tensor<double> {shape, std::move(out)};
     }
 
     //! \brief `cos` of every one of the row-major floats at \p data, of shape \p shape: \ref float_sines_into of them
@@ -2430,6 +2512,12 @@ namespace numerical {
       return sin_of(a.data().data(), a.shape());
     }
 
+    //! \brief `sin` of every `double` of \p a, a view read where it lies (\ref by_runs).
+    [[nodiscard]] inline tensor<double> sin_viewed(const tensor<double>& a)
+    {
+      return by_runs(a, &double_sines_into<false>);
+    }
+
     //! \brief `sin` of every `float` of \p a through doubles, a view read where it lies (\ref by_runs).
     [[nodiscard]] inline tensor<float> sin_viewed(const tensor<float>& a)
     {
@@ -2441,6 +2529,12 @@ namespace numerical {
     [[nodiscard]] tensor<T> cos_viewed(const tensor<T>& a)
     {
       return cos_of(a.data().data(), a.shape());
+    }
+
+    //! \brief `cos` of every `double` of \p a, a view read where it lies (\ref by_runs).
+    [[nodiscard]] inline tensor<double> cos_viewed(const tensor<double>& a)
+    {
+      return by_runs(a, &double_sines_into<true>);
     }
 
     //! \brief `cos` of every `float` of \p a through doubles, a view read where it lies (\ref by_runs).

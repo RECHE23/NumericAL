@@ -612,6 +612,77 @@ TEST(atan_of_a_double_by_the_table)
   EXPECT(numerical::atan(t) == numerical::map(t, [](double v) { return numerical::detail::elementary_atan(v); }));
 }
 
+// sin and cos of a double by a table of sin(jπ/32) and cos(jπ/32): within an ulp of the C library's in long double
+// where that is wider, two where it is not (macOS's own strays 0.86 ulp), the library's bits past 2^20 and for an
+// infinity or a NaN, x itself (and 1) under 2^−27 with ±0 kept, and the same bits from a block as from one call;
+// values rounded to nearest, whichever function elementary_sin takes.
+TEST(sin_and_cos_of_a_double_by_the_table)
+{
+  std::vector<double> x;
+  for (int i {0}; i < 20000; ++i) {
+    const double t {static_cast<double>(i) / 20000.0};
+    x.push_back(-8.0 + (16.0 * t));                                         // the table's every entry, both signs
+    x.push_back(static_cast<double>(i) * 0x1.921fb54442d18p-4);             // on multiples of π/32
+    x.push_back(std::ldexp(1.0 + t, (i % 80) - 30));                        // from 2^−30 to 2^49, past the bound
+    x.push_back(((static_cast<double>(i % 7) - 3.0) * 1e5) + (1000.0 * t)); // far in, below the bound
+  }
+  const double inf {std::numeric_limits<double>::infinity()};
+  for (const double v : {0.0, -0.0, inf, -inf, std::numeric_limits<double>::quiet_NaN(), 0x1p-27, 0x1.fffffffffffffp-28,
+                         -0x1p-30, 5e-324, 0x1p20, std::nextafter(0x1p20, inf), -0x1p20, 1e300}) { // an odd count
+    x.push_back(v);
+  }
+  const bool wider {std::numeric_limits<long double>::digits > std::numeric_limits<double>::digits};
+  // the C library's sin or cos of v in double, and rounded from long double where that is wider
+  const auto in_double {[](bool cosine, double v) { return cosine ? std::cos(v) : std::sin(v); }};
+  const auto reference {[&](bool cosine, double v) {
+                          if (!wider) {
+                            return in_double(cosine, v);
+                          }
+                          const long double at {static_cast<long double>(v)};
+                          return static_cast<double>(cosine ? std::cos(at) : std::sin(at));
+                        }};
+  for (const bool cosine : {false, true}) {
+    std::vector<double> block(x.size());
+    if (cosine) {
+      numerical::detail::double_sines_into<true>(x.data(), block.data(), x.size());
+    }
+    else {
+      numerical::detail::double_sines_into<false>(x.data(), block.data(), x.size());
+    }
+    bool same  {true};
+    bool close {true};
+    for (std::size_t i {0}; i < x.size(); ++i) {
+      const double one          {cosine ? numerical::detail::elementary_cos(x[i]) : numerical::detail::elementary_sin(x[i])};
+      same = same && std::bit_cast<std::uint64_t>(one) == std::bit_cast<std::uint64_t>(block[i]);
+      const double library      {reference(cosine, x[i])};
+      if (!(std::fabs(x[i]) <= numerical::detail::sine_reduction_bound)) { // the library's own, NaN for NaN and ±∞
+        close = close && (std::isnan(one) ? std::isnan(library) : one == in_double(cosine, x[i]));
+      }
+      else {
+        const double ulp {std::fabs(std::nextafter(library, inf) - library)};
+        close = close && std::fabs(one - library) <= (wider ? 1.0 : 2.0) * ulp;
+      }
+    }
+    EXPECT(same);
+    EXPECT(close);
+  }
+  EXPECT(std::signbit(numerical::detail::elementary_sin(-0.0)) && numerical::detail::elementary_cos(-0.0) == 1.0);
+  EXPECT(numerical::detail::elementary_sin(0x1.fffffffffffffp-28) == 0x1.fffffffffffffp-28);
+  // the table's own values, rounded to nearest, whichever function elementary_sin takes
+  EXPECT(numerical::detail::table_sine<false>(0.5) == 0x1.eaee8744b05f0p-2);
+  EXPECT(numerical::detail::table_sine<true>(0.5) == 0x1.c1528065b7d50p-1);
+  EXPECT(numerical::detail::table_sine<false>(3.0) == 0x1.210386db6d55bp-3);
+  EXPECT(numerical::detail::table_sine<true>(3.0) == -0x1.fae04be85e5d2p-1);
+  EXPECT(numerical::detail::table_sine<false>(-1e5) == -0x1.24daa9c527e96p-5);
+  EXPECT(numerical::detail::table_sine<true>(1e6) == 0x1.df9df9906d32cp-1);
+  const numerical::tensor<double> t {{2, 2}, {0.5, -0.0, 1e-20, 3e7}};
+  EXPECT(numerical::sin(t) == numerical::map(t, [](double v) { return numerical::detail::elementary_sin(v); }));
+  EXPECT(numerical::cos(t) == numerical::map(t, [](double v) { return numerical::detail::elementary_cos(v); }));
+  const numerical::tensor<double> wide   {numerical::arange(0.0, 2048.0, 1.0).reshaped({32, 64})};
+  const numerical::tensor<double> wide_t {wide.transposed({1, 0})};
+  EXPECT(numerical::sin(wide_t) == numerical::sin(wide_t.materialized()) && numerical::cos(wide_t) == numerical::cos(wide_t.materialized()));
+}
+
 // log1p of a double by a table of ln(k/128): within an ulp of the C library's in long double where that is wider, its
 // own bits at the ends (x itself under 2^−54, ±0 kept, −∞ at −1, NaN below), and the same bits from a block, in vectors,
 // as from one call; values rounded to nearest, whichever function elementary_log1p takes.

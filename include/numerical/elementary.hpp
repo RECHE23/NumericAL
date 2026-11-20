@@ -539,6 +539,166 @@ namespace numerical::detail {
     return blend((quadrant & 2U) != 0U, -value, value);
   }
 
+  //! \brief 32/π, the `double` nearest it (`tools/sine_table.py` derives each constant here).
+  inline constexpr double sine_inverse_step {0x1.45f306dc9c883p+3};
+
+  //! \brief π/32 in three parts: its double, then the double of the rest, then the double of what is left.
+  inline constexpr std::array<double, 3> sine_step_parts {0x1.921fb54442d18p-4, 0x1.1a62633145c07p-58, -0x1.f1976b7ed8fbcp-114};
+
+  //! \brief For j = 0…63, at 4j sin(jπ/32) and at 4j + 1 what that `double` leaves out, at 4j + 2 cos(jπ/32) and at
+  //!        4j + 3 what that one leaves out, each the `double` nearest. Not `inline`, as \ref exp_table.
+  constexpr std::array<double, 256> sine_table {
+    0x0p+0, 0x0p+0, 0x1.0000000000000p+0, 0x0p+0,
+    0x1.917a6bc29b42cp-4, -0x1.e2718d26ed688p-60, 0x1.fd88da3d12526p-1, -0x1.87df6378811c7p-55,
+    0x1.8f8b83c69a60bp-3, -0x1.26d19b9ff8d82p-57, 0x1.f6297cff75cb0p-1, 0x1.562172a361fd3p-56,
+    0x1.294062ed59f06p-2, -0x1.5d28da2c4612dp-56, 0x1.e9f4156c62ddap-1, 0x1.760b1e2e3f81ep-55,
+    0x1.87de2a6aea963p-2, -0x1.72cedd3d5a610p-57, 0x1.d906bcf328d46p-1, 0x1.457e610231ac2p-56,
+    0x1.e2b5d3806f63bp-2, 0x1.e0d891d3c6841p-58, 0x1.c38b2f180bdb1p-1, -0x1.6e0b1757c8d07p-56,
+    0x1.1c73b39ae68c8p-1, 0x1.b25dd267f6600p-55, 0x1.a9b66290ea1a3p-1, 0x1.9f630e8b6dac8p-60,
+    0x1.44cf325091dd6p-1, 0x1.8076a2cfdc6b3p-57, 0x1.8bc806b151741p-1, -0x1.2c5e12ed1336dp-55,
+    0x1.6a09e667f3bcdp-1, -0x1.bdd3413b26456p-55, 0x1.6a09e667f3bcdp-1, -0x1.bdd3413b26456p-55,
+    0x1.8bc806b151741p-1, -0x1.2c5e12ed1336dp-55, 0x1.44cf325091dd6p-1, 0x1.8076a2cfdc6b3p-57,
+    0x1.a9b66290ea1a3p-1, 0x1.9f630e8b6dac8p-60, 0x1.1c73b39ae68c8p-1, 0x1.b25dd267f6600p-55,
+    0x1.c38b2f180bdb1p-1, -0x1.6e0b1757c8d07p-56, 0x1.e2b5d3806f63bp-2, 0x1.e0d891d3c6841p-58,
+    0x1.d906bcf328d46p-1, 0x1.457e610231ac2p-56, 0x1.87de2a6aea963p-2, -0x1.72cedd3d5a610p-57,
+    0x1.e9f4156c62ddap-1, 0x1.760b1e2e3f81ep-55, 0x1.294062ed59f06p-2, -0x1.5d28da2c4612dp-56,
+    0x1.f6297cff75cb0p-1, 0x1.562172a361fd3p-56, 0x1.8f8b83c69a60bp-3, -0x1.26d19b9ff8d82p-57,
+    0x1.fd88da3d12526p-1, -0x1.87df6378811c7p-55, 0x1.917a6bc29b42cp-4, -0x1.e2718d26ed688p-60,
+    0x1.0000000000000p+0, 0x0p+0, 0x0p+0, 0x0p+0,
+    0x1.fd88da3d12526p-1, -0x1.87df6378811c7p-55, -0x1.917a6bc29b42cp-4, 0x1.e2718d26ed688p-60,
+    0x1.f6297cff75cb0p-1, 0x1.562172a361fd3p-56, -0x1.8f8b83c69a60bp-3, 0x1.26d19b9ff8d82p-57,
+    0x1.e9f4156c62ddap-1, 0x1.760b1e2e3f81ep-55, -0x1.294062ed59f06p-2, 0x1.5d28da2c4612dp-56,
+    0x1.d906bcf328d46p-1, 0x1.457e610231ac2p-56, -0x1.87de2a6aea963p-2, 0x1.72cedd3d5a610p-57,
+    0x1.c38b2f180bdb1p-1, -0x1.6e0b1757c8d07p-56, -0x1.e2b5d3806f63bp-2, -0x1.e0d891d3c6841p-58,
+    0x1.a9b66290ea1a3p-1, 0x1.9f630e8b6dac8p-60, -0x1.1c73b39ae68c8p-1, -0x1.b25dd267f6600p-55,
+    0x1.8bc806b151741p-1, -0x1.2c5e12ed1336dp-55, -0x1.44cf325091dd6p-1, -0x1.8076a2cfdc6b3p-57,
+    0x1.6a09e667f3bcdp-1, -0x1.bdd3413b26456p-55, -0x1.6a09e667f3bcdp-1, 0x1.bdd3413b26456p-55,
+    0x1.44cf325091dd6p-1, 0x1.8076a2cfdc6b3p-57, -0x1.8bc806b151741p-1, 0x1.2c5e12ed1336dp-55,
+    0x1.1c73b39ae68c8p-1, 0x1.b25dd267f6600p-55, -0x1.a9b66290ea1a3p-1, -0x1.9f630e8b6dac8p-60,
+    0x1.e2b5d3806f63bp-2, 0x1.e0d891d3c6841p-58, -0x1.c38b2f180bdb1p-1, 0x1.6e0b1757c8d07p-56,
+    0x1.87de2a6aea963p-2, -0x1.72cedd3d5a610p-57, -0x1.d906bcf328d46p-1, -0x1.457e610231ac2p-56,
+    0x1.294062ed59f06p-2, -0x1.5d28da2c4612dp-56, -0x1.e9f4156c62ddap-1, -0x1.760b1e2e3f81ep-55,
+    0x1.8f8b83c69a60bp-3, -0x1.26d19b9ff8d82p-57, -0x1.f6297cff75cb0p-1, -0x1.562172a361fd3p-56,
+    0x1.917a6bc29b42cp-4, -0x1.e2718d26ed688p-60, -0x1.fd88da3d12526p-1, 0x1.87df6378811c7p-55,
+    0x0p+0, 0x0p+0, -0x1.0000000000000p+0, 0x0p+0,
+    -0x1.917a6bc29b42cp-4, 0x1.e2718d26ed688p-60, -0x1.fd88da3d12526p-1, 0x1.87df6378811c7p-55,
+    -0x1.8f8b83c69a60bp-3, 0x1.26d19b9ff8d82p-57, -0x1.f6297cff75cb0p-1, -0x1.562172a361fd3p-56,
+    -0x1.294062ed59f06p-2, 0x1.5d28da2c4612dp-56, -0x1.e9f4156c62ddap-1, -0x1.760b1e2e3f81ep-55,
+    -0x1.87de2a6aea963p-2, 0x1.72cedd3d5a610p-57, -0x1.d906bcf328d46p-1, -0x1.457e610231ac2p-56,
+    -0x1.e2b5d3806f63bp-2, -0x1.e0d891d3c6841p-58, -0x1.c38b2f180bdb1p-1, 0x1.6e0b1757c8d07p-56,
+    -0x1.1c73b39ae68c8p-1, -0x1.b25dd267f6600p-55, -0x1.a9b66290ea1a3p-1, -0x1.9f630e8b6dac8p-60,
+    -0x1.44cf325091dd6p-1, -0x1.8076a2cfdc6b3p-57, -0x1.8bc806b151741p-1, 0x1.2c5e12ed1336dp-55,
+    -0x1.6a09e667f3bcdp-1, 0x1.bdd3413b26456p-55, -0x1.6a09e667f3bcdp-1, 0x1.bdd3413b26456p-55,
+    -0x1.8bc806b151741p-1, 0x1.2c5e12ed1336dp-55, -0x1.44cf325091dd6p-1, -0x1.8076a2cfdc6b3p-57,
+    -0x1.a9b66290ea1a3p-1, -0x1.9f630e8b6dac8p-60, -0x1.1c73b39ae68c8p-1, -0x1.b25dd267f6600p-55,
+    -0x1.c38b2f180bdb1p-1, 0x1.6e0b1757c8d07p-56, -0x1.e2b5d3806f63bp-2, -0x1.e0d891d3c6841p-58,
+    -0x1.d906bcf328d46p-1, -0x1.457e610231ac2p-56, -0x1.87de2a6aea963p-2, 0x1.72cedd3d5a610p-57,
+    -0x1.e9f4156c62ddap-1, -0x1.760b1e2e3f81ep-55, -0x1.294062ed59f06p-2, 0x1.5d28da2c4612dp-56,
+    -0x1.f6297cff75cb0p-1, -0x1.562172a361fd3p-56, -0x1.8f8b83c69a60bp-3, 0x1.26d19b9ff8d82p-57,
+    -0x1.fd88da3d12526p-1, 0x1.87df6378811c7p-55, -0x1.917a6bc29b42cp-4, 0x1.e2718d26ed688p-60,
+    -0x1.0000000000000p+0, 0x0p+0, 0x0p+0, 0x0p+0,
+    -0x1.fd88da3d12526p-1, 0x1.87df6378811c7p-55, 0x1.917a6bc29b42cp-4, -0x1.e2718d26ed688p-60,
+    -0x1.f6297cff75cb0p-1, -0x1.562172a361fd3p-56, 0x1.8f8b83c69a60bp-3, -0x1.26d19b9ff8d82p-57,
+    -0x1.e9f4156c62ddap-1, -0x1.760b1e2e3f81ep-55, 0x1.294062ed59f06p-2, -0x1.5d28da2c4612dp-56,
+    -0x1.d906bcf328d46p-1, -0x1.457e610231ac2p-56, 0x1.87de2a6aea963p-2, -0x1.72cedd3d5a610p-57,
+    -0x1.c38b2f180bdb1p-1, 0x1.6e0b1757c8d07p-56, 0x1.e2b5d3806f63bp-2, 0x1.e0d891d3c6841p-58,
+    -0x1.a9b66290ea1a3p-1, -0x1.9f630e8b6dac8p-60, 0x1.1c73b39ae68c8p-1, 0x1.b25dd267f6600p-55,
+    -0x1.8bc806b151741p-1, 0x1.2c5e12ed1336dp-55, 0x1.44cf325091dd6p-1, 0x1.8076a2cfdc6b3p-57,
+    -0x1.6a09e667f3bcdp-1, 0x1.bdd3413b26456p-55, 0x1.6a09e667f3bcdp-1, -0x1.bdd3413b26456p-55,
+    -0x1.44cf325091dd6p-1, -0x1.8076a2cfdc6b3p-57, 0x1.8bc806b151741p-1, -0x1.2c5e12ed1336dp-55,
+    -0x1.1c73b39ae68c8p-1, -0x1.b25dd267f6600p-55, 0x1.a9b66290ea1a3p-1, 0x1.9f630e8b6dac8p-60,
+    -0x1.e2b5d3806f63bp-2, -0x1.e0d891d3c6841p-58, 0x1.c38b2f180bdb1p-1, -0x1.6e0b1757c8d07p-56,
+    -0x1.87de2a6aea963p-2, 0x1.72cedd3d5a610p-57, 0x1.d906bcf328d46p-1, 0x1.457e610231ac2p-56,
+    -0x1.294062ed59f06p-2, 0x1.5d28da2c4612dp-56, 0x1.e9f4156c62ddap-1, 0x1.760b1e2e3f81ep-55,
+    -0x1.8f8b83c69a60bp-3, 0x1.26d19b9ff8d82p-57, 0x1.f6297cff75cb0p-1, 0x1.562172a361fd3p-56,
+    -0x1.917a6bc29b42cp-4, 0x1.e2718d26ed688p-60, 0x1.fd88da3d12526p-1, -0x1.87df6378811c7p-55,
+  };
+
+  /*!
+   * \brief The terms \ref table_sine adds for sin x = a + b·r + …: a = S and b = C for the sine, a = C and b = −S for
+   *        the cosine (S, C the table's sin(jπ/32) and cos(jπ/32), each a head and a tail), and the value where |x| <
+   *        2⁻²⁷: x for the sine, 1 for the cosine.
+   */
+  struct sine_terms
+  {
+    double a;      //!< The leading term's head.
+    double a_tail; //!< The leading term's tail.
+    double b;      //!< r's factor, its head.
+    double b_tail; //!< r's factor, its tail.
+    double tiny;   //!< The value where |x| < 2⁻²⁷.
+  };
+
+  /*!
+   * \brief \ref sine_terms of the table's row at \p entry (sin head, sin tail, cos head, cos tail) for \p x: the sine's
+   *        where not \p Cosine, the cosine's otherwise; one specialization each, no choice at run time.
+   */
+  template <bool Cosine>
+  sine_terms sine_terms_of(std::uint64_t entry,
+                           double        x) noexcept;
+
+  /*! \brief The terms of the sine (\ref sine_terms): a = S, b = C, x itself where tiny. */
+  template <>
+  NUMERICAL_ALWAYS_INLINE sine_terms sine_terms_of<false>(std::uint64_t entry,
+                                                          double        x) noexcept
+  {
+    return {sine_table[entry], sine_table[entry + 1], sine_table[entry + 2], sine_table[entry + 3], x};
+  }
+
+  /*! \brief The terms of the cosine (\ref sine_terms): a = C, b = −S, 1 where tiny. */
+  template <>
+  NUMERICAL_ALWAYS_INLINE sine_terms sine_terms_of<true>(std::uint64_t entry,
+                                                         double /*x*/) noexcept
+  {
+    return {sine_table[entry + 2], sine_table[entry + 3], -sine_table[entry], -sine_table[entry + 1], 1.0};
+  }
+
+  /*!
+   * \brief sin(\p x), or cos(\p x) where \p Cosine, of a `double` within half an ulp and a few thousandths, for |x| ≤
+   *        \ref sine_reduction_bound (another x gives a value of no use): j the integer nearest x·32/π (its low six bits
+   *        the table's entry), r = x − jπ/32 by \ref sine_step_parts as a pair r_hi + r_lo (|r| ≤ π/64); sin r − r and
+   *        cos r − 1 by their Taylor series to r¹¹ and r¹⁰; then sin x = S + (C·r + S·(cos r − 1) + C·(sin r − r)),
+   *        cos x = C + (−S·r + …) for S, C the table's sin(jπ/32) and cos(jπ/32), the first sum exact (a two-sum and a
+   *        two-product), the small rest added once. x itself where |x| < 2⁻²⁷ (±0 kept), 1 for the cosine. Every
+   *        product beside a sum fused explicitly and every other operation its own, so the bits are the same in
+   *        vectors and under every compiler with the FMA instructions. Within 0.502 ulp of the exact value on 80 000
+   *        points to 2²⁰, a third of them near multiples of π/32 (the C library's of macOS: 0.86).
+   */
+  template <bool Cosine>
+  NUMERICAL_ALWAYS_INLINE double table_sine(double x) noexcept
+  {
+    constexpr double    shifter  {0x1.8p52};
+    const double        shifted  {std::fma(x, sine_inverse_step, shifter)};            // x·32/π rounded to an integer
+    const double        j        {shifted - shifter};
+    const std::uint64_t entry    {4U * (std::bit_cast<std::uint64_t>(shifted) & 63U)}; // j's two's complement, mod 64
+    const double        r        {std::fma(-j, sine_step_parts[0], x)};
+    const double        t        {-j * sine_step_parts[1]};
+    const double        t_error  {std::fma(-j, sine_step_parts[1], -t)};
+    double              r_high   {0.0};
+    double              r_error  {0.0};
+    two_sum(r, t, r_high, r_error);
+    const double        r_low    {std::fma(-j, sine_step_parts[2], r_error + t_error)};
+    const double        z        {r_high * r_high};
+    const double        odd      {std::fma(z, std::fma(z, std::fma(z, std::fma(z, -0x1.ae64567f544e4p-26, 0x1.71de3a556c734p-19), -0x1.a01a01a01a01ap-13), 0x1.1111111111111p-7), -0x1.5555555555555p-3)};
+    const double        even     {std::fma(z, std::fma(z, std::fma(z, std::fma(z, -0x1.27e4fb7789f5cp-22, 0x1.a01a01a01a01ap-16), -0x1.6c16c16c16c17p-10), 0x1.5555555555555p-5), -0.5)};
+    const double        sin_rest {std::fma(r_high * z, odd, r_low)};          // sin r − r_high
+    const double        cos_rest {std::fma(z, even, -(r_high * r_low))};      // cos r − 1
+    const sine_terms    terms    {sine_terms_of<Cosine>(entry, x)};
+    const double        a        {terms.a};
+    const double        b        {terms.b};
+    const double        p        {b * r_high};
+    const double        p_error  {std::fma(b, r_high, -p)};
+    double              head     {0.0};
+    double              error    {0.0};
+    two_sum(a, p, head, error);
+    double small                 {error + p_error};
+    small = small + terms.a_tail;
+    small = std::fma(terms.b_tail, r_high, small);
+    small = std::fma(b, sin_rest, small);
+    small = std::fma(a, cos_rest, small);
+    const double value {head + small};
+    return blend(std::fabs(x) < 0x1p-27, terms.tiny, value);
+  }
+
   /*!
    * \brief atan(\p x): y = |x|, or 1/|x| past 1 (its rounding error carried), c = k/64 the nearest point of
    *        \ref atan_table, t = (y − c)/(1 + y c) as a pair, |t| ≤ 2^−7, atan(t) − t by its Taylor series to t^11;

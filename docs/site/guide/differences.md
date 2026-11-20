@@ -63,6 +63,11 @@ and an `IndexError`), is also a `numpy.exceptions.AxisError`; where `scipy.linal
   multiply-add. The last bit differs from NumPy's in some 9 % of the values on macOS. ±0, the
   values below 2^-27 (themselves), those past 2^54 (±π/2) and NaN are the library's. Where `exp` takes the C
   library's, so does `arctan`.
+- **`sin` and `cos` of float64** are NumericAL's own, by a table of sin(jπ/32) and cos(jπ/32) and short series,
+  the reduction by π/32 in three parts: within 0.502 ulp of the exact value (macOS's C library, NumPy's there, 0.86),
+  the same bits on every processor with fused multiply-add, under every compiler. The last bit differs from NumPy's in
+  some 4 % of the values on macOS. The values below 2^-27 (themselves, and 1) are exact; past 2^20, and for an
+  infinity or a NaN, the C library's. Where `exp` takes the C library's, so do `sin` and `cos`.
 - **`eig` and `eigvals` answer in complex numbers** whatever the eigenvalues, as NumPy 2.5's and SciPy's; NumPy
   before 2.5 made them real where it could.
 - **A float32 or complex64 decomposition** is computed in double precision and rounded to single, below order 500
