@@ -34,6 +34,7 @@
 #if defined(_WIN32)
 #  include <process.h>
 #else
+#  include <pthread.h>
 #  include <unistd.h>
 #endif
 #if defined(__linux__)
@@ -422,13 +423,32 @@ namespace numerical::detail {
      */
     static thread_pool& shared()
     {
+      if (thread_pool* const ready {instance().load(std::memory_order_acquire)}; ready != nullptr) {
+        return *ready;
+      }
+      // Made and started under the start lock, which a fork takes first (lock_for_fork): no child is
+      // forked while the pool is part made, a static's guard or a lock held by a thread the child has not (its first
+      // shared() then waited for ever).
+      const std::lock_guard<std::mutex> one {start_lock()};
+#if !defined(_WIN32)
+      static const bool forks_wait          {pthread_atfork(&lock_for_fork, &unlock_after_fork, &unlock_after_fork) == 0};
+      // Without the handlers (no memory for them), a fork during a first start stays as it was.
+      (void)forks_wait;
+#endif
       static thread_pool* const created {new thread_pool {}}; // once, kept past a start that failed
       static thread_pool* const pool    {[] {
                                            created->start();
-                                           instance().store(created);
+                                           instance().store(created, std::memory_order_release);
                                            return created;
                                          }()};
       return *pool;
+    }
+
+    //! \brief The lock under which \ref shared makes and starts the pool, and which a fork takes before it forks.
+    [[nodiscard]] static std::mutex& start_lock() noexcept
+    {
+      static std::mutex lock;
+      return lock;
     }
 
     //! \brief The pool if \ref shared has started it, else nullptr (asking starts nothing).
@@ -562,6 +582,21 @@ namespace numerical::detail {
     thread_pool() = default;
 
     //! \brief The started pool, nullptr before.
+#if !defined(_WIN32)
+    //! \brief `pthread_atfork`'s handler before a fork: the start lock taken, so that the fork waits for a start.
+    static void lock_for_fork() noexcept
+    {
+      start_lock().lock(); // released by unlock_after_fork, in the parent and in the child
+    }
+
+    //! \brief `pthread_atfork`'s handler after a fork, in the parent and in the child: the start lock released.
+    static void unlock_after_fork() noexcept
+    {
+      start_lock().unlock();
+    }
+
+#endif
+
     [[nodiscard]] static std::atomic<thread_pool*>& instance() noexcept
     {
       static std::atomic<thread_pool*> pool {nullptr};

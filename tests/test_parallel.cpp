@@ -606,6 +606,36 @@ TEST(a_cap_above_one_bounds_the_threads_of_a_run)
 }
 
 #if !defined(_WIN32)
+// A fork waits for a start of the pool under way (shared() holds the start lock while it makes and starts it): a
+// thread holds the lock as a start does, the main thread forks meanwhile, and the child, a copy of the memory once the
+// fork could go on, finds that thread's work done. Without the fork handlers it would have been copied while the lock
+// was held, and the child's first shared() would have waited for ever on a thread it has not.
+TEST(a_fork_waits_for_a_start_of_the_pool)
+{
+  (void)numerical::detail::thread_pool::shared(); // the handlers, set by the first start
+  std::atomic<bool> holding  {false};
+  std::atomic<bool> done     {false};
+  std::thread       starting {[&holding, &done] {
+                                const std::scoped_lock held {numerical::detail::thread_pool::start_lock()};
+                                holding = true;
+                                std::this_thread::sleep_for(std::chrono::milliseconds {50});
+                                done = true;
+                              }};
+  while (!holding.load()) {
+    std::this_thread::yield();
+  }
+  const pid_t child {fork()};
+  if (child == 0) {
+    (void)alarm(10);
+    (void)numerical::detail::thread_pool::shared(); // returns: the start lock is free in the child
+    end_child(done.load() ? 0 : 1);
+  }
+  int status {0};
+  (void)waitpid(child, &status, 0);
+  starting.join();
+  EXPECT(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+}
+
 // A child forked while the pool runs has none of its workers, and their locks may be held: it runs its kernels
 // alone, to the end. The child exits 0 when its run completed and its sum is right; an alarm ends a hung one.
 TEST(a_forked_child_runs_its_kernels_alone)

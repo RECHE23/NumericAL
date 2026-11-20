@@ -14,6 +14,9 @@ A change that can break code is listed under **Breaking** and held for a month's
   tensor at a null address took its offset anyway (undefined), and a stride, over an empty axis or summed over the
   axes, could overflow its byte count; an empty tensor now reads nothing, and a stride past what an address reaches
   raises `BufferError`. An axis of one takes any stride.
+- **A fork during the thread pool's first start waits for it**: a child forked while another thread started the
+  pool inherited a static's guard or a lock held by a thread it has not, and its first parallel run waited for ever.
+  The pool is made and started under a lock that a `pthread_atfork` handler takes before each fork (POSIX).
 
 ## 2026.11.19 — 2026-11-20
 
