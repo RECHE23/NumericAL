@@ -34,13 +34,15 @@ A change that can break code is listed under **Breaking** and held for a month's
   gave the view itself, against the array API's contract.
 - **The small eigenvalues of a graded symmetric matrix keep their relative accuracy**, as LAPACK's: the tridiagonal
   QL iteration (`eigvalsh` and `eigvalsh_tridiagonal` at every order, `eigh` up to order 25 and with
-  `method="tridiagonal_ql"`) is LAPACK's `dsteqr`: each block scaled into a safe range, iterated by QL or by QR from
-  its smaller end, an off-diagonal entry dropped against its neighbours' diagonal entries, no shift subtracted from
-  the whole diagonal. EISPACK's `tql2`, before, tested against the largest entry seen and moved every diagonal entry
+  `method="tridiagonal_ql"`) is LAPACK's: `dsterf`'s root-free iteration for the eigenvalues alone, `dsteqr`'s
+  rotations with the eigenvectors. Each block scaled into a safe range, iterated by QL or by QR from its smaller end,
+  an off-diagonal entry dropped against its neighbours' diagonal entries, no shift subtracted from the whole
+  diagonal. EISPACK's `tql2`, before, tested against the largest entry seen and moved every diagonal entry
   by the accumulated shift: on a tridiagonal `dᵢ = 0.01ⁱ`, `eᵢ` near `√(dᵢ dᵢ₊₁)`, the smallest eigenvalues (1e-18 of
-  the largest) lost every digit, where NumPy and SciPy keep them to 3e-16; now 2e-16 to 6e-15 against 60-digit
-  references (orders 6 to 60). Backward stable before and after; other bits of the eigenvalues and eigenvectors these
-  paths give.
+  the largest) lost every digit, where NumPy and SciPy keep them to 3e-16; now SciPy's own errors (`eigvalsh`, 3e-16
+  to 2e-15) and 2e-16 to 6e-15 with the eigenvectors, against 60-digit references (orders 6 to 60), at the speed of
+  before (`eigvalsh_tridiagonal` of order 2000: 55 ms, SciPy's 60). Backward stable before and after; other bits of
+  the eigenvalues and eigenvectors these paths give.
 - **A range of `tensor::sliced` (and the binding's `_take`) is checked without overflow**: `(count − 1) · step` was
   formed in `std::ptrdiff_t` before the bounds test, undefined for a step of `PTRDIFF_MIN` or `PTRDIFF_MAX` and a
   count past one, and the test could then pass. A range of one index takes any step. Python's slices were bounded

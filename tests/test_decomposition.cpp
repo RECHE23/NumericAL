@@ -906,6 +906,34 @@ TEST(symmetric_eigen_reads_the_lower_triangle_and_bounds_its_iterations)
   numerical::buffer<double> up    {4.0, 3.0, 2.0};
   numerical::buffer<double> upper {-1.0, 1.0, 0.0};
   EXPECT_THROWS(numerical::detail::tridiagonal_ql(up, upper, v, 3, 0), numerical::convergence_error); // by QR
+  numerical::buffer<double> none;
+  numerical::buffer<double> d_values     {2.0, 3.0, 4.0};
+  numerical::buffer<double> e_values     {1.0, -1.0, 0.0};
+  EXPECT_THROWS(numerical::detail::tridiagonal_ql(d_values, e_values, none, 3, 0), numerical::convergence_error);      // root-free QL
+  numerical::buffer<double> up_values    {4.0, 3.0, 2.0};
+  numerical::buffer<double> upper_values {-1.0, 1.0, 0.0};
+  EXPECT_THROWS(numerical::detail::tridiagonal_ql(up_values, upper_values, none, 3, 0), numerical::convergence_error); // root-free QR
+}
+
+// The root-free iteration's rotation of a zero cosine (its shift on a diagonal entry exactly): [0 1 0; 1 0 ½; 0 ½ −1]
+// by QL and its mirror by QR, each to its eigenvalues (those of the same matrix through the rotations, dsteqr's).
+TEST(the_root_free_iteration_takes_a_shift_on_a_diagonal_entry)
+{
+  for (const bool upwards : {false, true}) {
+    numerical::buffer<double> d         {upwards ? numerical::buffer<double> {-1.0, 0.0, 0.0} : numerical::buffer<double> {0.0, 0.0, -1.0}};
+    numerical::buffer<double> e         {upwards ? numerical::buffer<double> {0.5, 1.0, 0.0} : numerical::buffer<double> {1.0, 0.5, 0.0}};
+    numerical::buffer<double> d_rotated {d};
+    numerical::buffer<double> e_rotated {e};
+    numerical::buffer<double> none;
+    numerical::buffer<double> identity  {1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0};
+    numerical::detail::tridiagonal_ql(d, e, none, 3, 90);
+    numerical::detail::tridiagonal_ql(d_rotated, e_rotated, identity, 3, 90);
+    std::ranges::sort(d);
+    std::ranges::sort(d_rotated);
+    for (std::size_t i {0}; i < 3; ++i) {
+      EXPECT(std::abs(d[i] - d_rotated[i]) <= 8.0 * std::numeric_limits<double>::epsilon());
+    }
+  }
 }
 
 namespace {
@@ -956,7 +984,8 @@ namespace {
   bool graded_eigenvalues_keep_their_digits(std::size_t n,
                                             double      grade,
                                             double      size,
-                                            bool        upwards)
+                                            bool        upwards,
+                                            bool        vectors = false)
   {
     numerical::buffer<double> d(n);
     numerical::buffer<double> e(n, 0.0);
@@ -969,13 +998,17 @@ namespace {
     }
     numerical::buffer<double> unit_d {d};
     numerical::buffer<double> unit_e {e};
-    numerical::buffer<double> none;
-    numerical::detail::tridiagonal_ql(unit_d, unit_e, none, n, 30 * n);
+    numerical::buffer<double> rows(vectors ? n * n : 0, 0.0); // the identity's rows where the vectors are kept
+    for (std::size_t i {0}; vectors && i < n; ++i) {
+      rows[(i * n) + i] = 1.0;
+    }
+    numerical::buffer<double> unit_rows {rows};
+    numerical::detail::tridiagonal_ql(unit_d, unit_e, unit_rows, n, 30 * n);
     for (std::size_t i {0}; i < n; ++i) {
       d[i] *= size;
       e[i] *= size;
     }
-    numerical::detail::tridiagonal_ql(d, e, none, n, 30 * n);
+    numerical::detail::tridiagonal_ql(d, e, rows, n, 30 * n);
     std::ranges::sort(unit_d);
     std::ranges::sort(d);
     bool kept {true};
@@ -995,6 +1028,9 @@ TEST(a_graded_tridiagonal_keeps_the_relative_accuracy_of_its_small_eigenvalues)
     EXPECT(graded_eigenvalues_keep_their_digits(10, 0.01, 1e200, upwards));
     EXPECT(graded_eigenvalues_keep_their_digits(10, 0.01, 1e-200, upwards));
     EXPECT(graded_eigenvalues_keep_their_digits(24, 0.3, 1.0, upwards));
+    for (const double size : {1.0, 1e200, 1e-200}) { // with the eigenvectors: dsteqr's rotations
+      EXPECT(graded_eigenvalues_keep_their_digits(10, 0.01, size, upwards, true));
+    }
   }
 }
 
