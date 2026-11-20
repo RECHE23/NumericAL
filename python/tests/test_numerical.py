@@ -940,6 +940,64 @@ class NumpyInterop(unittest.TestCase):
         with self.assertRaises(TypeError):
             numerical.from_dlpack(Producer(base.astype(np.float16)))
 
+    def test_from_dlpack_checks_a_capsules_strides_and_reads_no_empty_address(self):
+        # Capsules made here (ctypes): an empty tensor at a null address with extreme strides reads nothing and forms
+        # no address; a stride past what an address reaches, alone or summed over the axes, raises BufferError; an
+        # axis of one takes any stride.
+        import ctypes
+
+        class Device(ctypes.Structure):
+            _fields_ = [("device_type", ctypes.c_int), ("device_id", ctypes.c_int)]
+
+        class DataType(ctypes.Structure):
+            _fields_ = [("code", ctypes.c_uint8), ("bits", ctypes.c_uint8), ("lanes", ctypes.c_uint16)]
+
+        class Tensor(ctypes.Structure):
+            _fields_ = [("data", ctypes.c_void_p), ("device", Device), ("ndim", ctypes.c_int), ("dtype", DataType),
+                        ("shape", ctypes.POINTER(ctypes.c_int64)), ("strides", ctypes.POINTER(ctypes.c_int64)),
+                        ("byte_offset", ctypes.c_uint64)]
+
+        class Managed(ctypes.Structure):
+            _fields_ = [("dl_tensor", Tensor), ("manager_ctx", ctypes.c_void_p), ("deleter", ctypes.c_void_p)]
+
+        new_capsule = ctypes.pythonapi.PyCapsule_New
+        new_capsule.restype = ctypes.py_object
+        new_capsule.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_void_p]
+        kept = []
+        elements = (ctypes.c_double * 4)(1.0, 2.0, 3.0, 4.0)
+
+        class Producer:
+            def __init__(self, shape, strides, data):
+                extents = (ctypes.c_int64 * len(shape))(*shape)
+                steps = (ctypes.c_int64 * len(shape))(*strides)
+                managed = Managed()
+                managed.dl_tensor.data = data
+                managed.dl_tensor.device = Device(1, 0)
+                managed.dl_tensor.ndim = len(shape)
+                managed.dl_tensor.dtype = DataType(2, 64, 1)
+                managed.dl_tensor.shape = extents
+                managed.dl_tensor.strides = steps
+                kept.extend((extents, steps, managed))
+                self.capsule = new_capsule(ctypes.addressof(managed), b"dltensor", None)
+
+            def __dlpack__(self, **keywords):
+                if keywords:
+                    raise TypeError("a classic capsule")
+                return self.capsule
+
+            def __dlpack_device__(self):
+                return (1, 0)
+
+        most = sys.maxsize
+        self.assertEqual(numerical.from_dlpack(Producer([0], [most], None)).shape, (0,))
+        self.assertEqual(numerical.from_dlpack(Producer([0, 5], [most, -most], None)).shape, (0, 5))
+        address = ctypes.addressof(elements)
+        for shape, strides in (([3], [most]), ([2], [most // 4]), ([2, 2], [most // 16 + 1, most // 16 + 1])):
+            with self.assertRaises(BufferError):
+                numerical.from_dlpack(Producer(shape, strides, address))
+        self.assertEqual(numerical.from_dlpack(Producer([1, 4], [most, 1], address)).tolist(), [[1.0, 2.0, 3.0, 4.0]])
+        self.assertEqual(numerical.from_dlpack(Producer([2, 2], [1, 2], address)).tolist(), [[1.0, 3.0], [2.0, 4.0]])
+
     def test_dlpack_round_trip(self):
         t = numerical.Tensor([1.5, 2.5, 3.5])
         arr = np.from_dlpack(t)

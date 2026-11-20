@@ -8,6 +8,13 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Fixed
+
+- **`from_dlpack` forms no address an empty tensor would not reach, and checks a capsule's strides**: an empty
+  tensor at a null address took its offset anyway (undefined), and a stride, over an empty axis or summed over the
+  axes, could overflow its byte count; an empty tensor now reads nothing, and a stride past what an address reaches
+  raises `BufferError`. An axis of one takes any stride.
+
 ## 2026.11.19 — 2026-11-20
 
 ### Fixed

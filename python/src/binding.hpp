@@ -4386,10 +4386,32 @@ inline PyObject* module_from_dlpack(PyObject* /*self*/, PyObject* capsule)
     catch (...) {
         return set_cpp_error();
     }
-    auto step = static_cast<Py_ssize_t>(element->size);
-    for (std::size_t axis {rank}; axis-- > 0;) { // bytes apart: DLPack's strides count elements
-        strides[axis] = t.strides != nullptr ? static_cast<Py_ssize_t>(t.strides[axis]) * static_cast<Py_ssize_t>(element->size) : step;
-        step         *= static_cast<Py_ssize_t>(shape[axis]);
+    // Bytes apart (DLPack's strides count elements), each checked so that the farthest element read lies within
+    // ptrdiff_t of the first: no product overflows. An empty tensor reads nothing: no stride, no address formed
+    // (null plus an offset, or an extreme stride over an empty axis, is undefined), a readable byte in its place.
+    constexpr auto     most {static_cast<std::uint64_t>(PTRDIFF_MAX)};
+    const std::uint64_t size {element->size};
+    if (total > most / size) {
+        PyErr_SetString(PyExc_BufferError, "from_dlpack: more elements than an address reaches");
+        return nullptr;
+    }
+    std::uint64_t step {size};
+    std::uint64_t reach {0}; // the farthest byte an element lies from the first, over every axis
+    for (std::size_t axis {rank}; total > 0 && axis-- > 0;) {
+        if (t.strides == nullptr || shape[axis] < 2) { // C order, or an axis that never steps
+            strides[axis] = shape[axis] < 2 ? 0 : static_cast<Py_ssize_t>(step);
+        }
+        else {
+            const std::int64_t  given {t.strides[axis]};
+            const std::uint64_t magnitude {given < 0 ? std::uint64_t {0} - static_cast<std::uint64_t>(given) : static_cast<std::uint64_t>(given)};
+            if (magnitude > most / size / (shape[axis] - 1) || magnitude * size * (shape[axis] - 1) > most - reach) {
+                PyErr_SetString(PyExc_BufferError, "from_dlpack: a stride past what an address reaches");
+                return nullptr;
+            }
+            reach         += magnitude * size * (shape[axis] - 1);
+            strides[axis]  = static_cast<Py_ssize_t>(given) * static_cast<Py_ssize_t>(size);
+        }
+        step *= shape[axis]; // within total · size, checked above
     }
     if (t.data == nullptr && total > 0) {
         PyErr_SetString(PyExc_BufferError, "from_dlpack: a null data address");
@@ -4399,7 +4421,8 @@ inline PyObject* module_from_dlpack(PyObject* /*self*/, PyObject* capsule)
     if (PyCapsule_SetName(capsule, versioned ? "used_dltensor_versioned" : "used_dltensor") != 0) {
         return nullptr;
     }
-    const auto* const address {static_cast<const unsigned char*>(t.data) + t.byte_offset};
+    static const unsigned char nothing {0};
+    const auto* const          address {total == 0 ? &nothing : static_cast<const unsigned char*>(t.data) + t.byte_offset};
     PyObject* const   result {tensor_from_elements(address, shape, strides, total, *element, out)};
     if (versioned && managed_versioned->deleter != nullptr) {
         managed_versioned->deleter(managed_versioned);
