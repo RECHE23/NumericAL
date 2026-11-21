@@ -28,6 +28,16 @@ class IndexFunctions(unittest.TestCase):
         self.assertEqual(numerical.count_nonzero(t), 6)  # a NaN is nonzero
         self.assertEqual(numerical.count_nonzero(t > 2, axis=1).tolist(), [2, 1])
         self.assertEqual(numerical.count_nonzero(t > 2, axis=(0, 1)), 3)
+        self.assertEqual(numerical.count_nonzero(t > 2, axis=(1, 0)), 3)  # the axes in any order, as NumPy's
+        cube = numerical.reshape(numerical.arange(24.0), (2, 3, 4)) > 5
+        for axes in ((2, 0), (0, 2), (-1, 0), (2, 1, 0)):
+            kept = numerical.count_nonzero(cube, axis=axes, keepdims=True)
+            self.assertEqual(kept.shape, tuple(1 if k in [a % 3 for a in axes] else e for k, e in enumerate((2, 3, 4))))
+            self.assertEqual(numerical.sum(kept), 18)
+        self.assertEqual(numerical.count_nonzero(cube, axis=(2, 0)).tolist(), [4, 6, 8])
+        with_nans = numerical.asarray([[1.0, float("nan"), 3.0], [4.0, 5.0, float("nan")]])
+        self.assertEqual(float(numerical.nanmean(with_nans, axis=(1, 0))), 3.25)
+        self.assertEqual(float(numerical.nanvar(with_nans, axis=(1, 0))), 2.1875)
         self.assertEqual(numerical.count_nonzero(t > 2, axis=(), keepdims=False).dtype, "int64")
         self.assertEqual(numerical.count_nonzero(t > 2, axis=0, keepdims=True).shape, (1, 3))
         self.assertEqual(numerical.count_nonzero(numerical.asarray([1.0, 0.0]), axis=()).tolist(), [1, 0])

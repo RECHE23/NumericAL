@@ -6705,11 +6705,11 @@ def count_nonzero(a, axis=None, *, keepdims=False):
     a = _tensor(a)
     if axis is None and not keepdims:
         return _numerical._count_nonzero(a, -1)
-    axes = _resolved_axes(a, axis, "count_nonzero")
+    axes = sorted(_resolved_axes(a, axis, "count_nonzero"))  # the last first: the axes before it keep their places
     if not axes:
         return asarray(a != 0, "int64") if a.dtype != "bool" else asarray(a, "int64")
     counted = _native(_numerical._count_nonzero, a, axes[-1])
-    for k in sorted(axes[:-1], reverse=True):
+    for k in reversed(axes[:-1]):
         counted = sum(counted, axis=k)
     if keepdims:
         counted = reshape(counted, tuple(1 if k in axes else e for k, e in enumerate(a.shape)))

@@ -16,6 +16,8 @@ A change that can break code is listed under **Breaking** and held for a month's
   transforms and, past 2¹⁴ elements, `data()` and `materialized()` read the buffer in place of the view (rows 0 and 0
   of a 2 × 300 matrix, `s + s` at (1, 5): 22 where 10). A view is now laid out as a transpose only where its strides
   are a transpose's. Python's indexing takes no step of 0 (NumPy's rule) and was not reached. Found by an audit
+- **`count_nonzero` over axes out of order** (`axis=(1, 0)`) counts them all, where it raised AxisError past the first,
+  and so do `nanmean`, `nanvar` and `nanstd` of an array with NaNs, which count through it. Found by an audit
 
 ## 2026.11.20 — 2026-11-20
 
