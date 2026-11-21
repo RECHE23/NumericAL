@@ -2845,4 +2845,98 @@ PyObject* module_borrowed_where(PyObject* /*self*/, PyObject* args)
     }
 }
 
+
+// _fast_binary(op, x, y) -> Tensor or NotImplemented: x op y, op one of + - * / ^ | %, of two Tensors of one dtype other
+// than bool (_binary's), or of a Tensor of a float or complex dtype and a Python float or int on either side, the
+// number weak: a rank-0 tensor of the Tensor's dtype (asarray(number, dtype)'s element) and binary_on, as _binary
+// computes them after the operator read the number through asarray. NotImplemented for anything else (two dtypes, a
+// bool Tensor, an int64 Tensor beside a number, an int no double holds), which the operator then reads as before. Of a
+// Tensor of 16 doubles, t * 2.0 took 1.0 µs, most of it asarray, and t + t 0.48, half of it the operator's checks.
+PyObject* module_fast_binary(PyObject* /*self*/, PyObject* args)
+{
+    const char* op = nullptr;
+    PyObject*   x  = nullptr;
+    PyObject*   y  = nullptr;
+    if (PyArg_ParseTuple(args, "sOO", &op, &x, &y) == 0) {
+        return nullptr;
+    }
+    const std::string_view name {op};
+    if (name.size() != 1 || std::string_view {"+-*/^|%"}.find(name[0]) == std::string_view::npos) {
+        return Py_NewRef(Py_NotImplemented);
+    }
+    auto* const       type {reinterpret_cast<PyTypeObject*>(sb::class_type<any_tensor>())};
+    const auto        held {[type](PyObject* obj) -> const any_tensor* {
+        return PyObject_TypeCheck(obj, type) != 0 ? reinterpret_cast<sb::wrapper<any_tensor>*>(obj)->held : nullptr;
+    }};
+    const any_tensor* a {held(x)};
+    const any_tensor* b {held(y)};
+    double            value {0.0};
+    const bool        pair {a != nullptr && b != nullptr && a->index() == b->index() && !is_bool(*a)};
+    const bool        x_number {!pair && b != nullptr && weak_number(x, value)};
+    const bool        y_number {!pair && !x_number && a != nullptr && weak_number(y, value)};
+    const any_tensor* t {x_number ? b : a};
+    if (!pair && ((!x_number && !y_number) || t->index() > 3)) { // a float or complex Tensor beside a number
+        return Py_NewRef(Py_NotImplemented);
+    }
+    try {
+        if (pair) {
+            return visit_arithmetic([&](const auto& p) { return binary_on(name[0], p, std::get<std::decay_t<decltype(p)>>(*b)); }, *a);
+        }
+        return visit_numeric([&](const auto& tensor) {
+            using T = element_of_t<std::decay_t<decltype(tensor)>>;
+            const numerical::tensor<T> number {{}, numerical::buffer<T> {static_cast<T>(value)}};
+            return x_number ? binary_on(name[0], number, tensor) : binary_on(name[0], tensor, number);
+        }, *t);
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
+// _fast_compare(op, x, y) -> bool Tensor or NotImplemented: _compare of the Tensor x and y, a Tensor of x's dtype or,
+// x of a float or complex dtype, a Python float or int (weak: a rank-0 tensor of x's dtype, asarray(number, dtype)'s
+// element), its answer and errors; NotImplemented for anything else, which the operator then promotes as before. Of a
+// Tensor of 16 doubles, t > 0.5 took 1.3 µs, most of it the promotion's Python.
+PyObject* module_fast_compare(PyObject* self, PyObject* args)
+{
+    const char* op = nullptr;
+    PyObject*   x  = nullptr;
+    PyObject*   y  = nullptr;
+    if (PyArg_ParseTuple(args, "sOO", &op, &x, &y) == 0) {
+        return nullptr;
+    }
+    auto* const type {reinterpret_cast<PyTypeObject*>(sb::class_type<any_tensor>())};
+    if (PyObject_TypeCheck(x, type) == 0) {
+        return Py_NewRef(Py_NotImplemented);
+    }
+    const any_tensor* a {reinterpret_cast<sb::wrapper<any_tensor>*>(x)->held};
+    double            value {0.0};
+    if (a != nullptr && PyObject_TypeCheck(y, type) != 0) {
+        const any_tensor* b {reinterpret_cast<sb::wrapper<any_tensor>*>(y)->held};
+        return b != nullptr && b->index() == a->index() ? module_compare(self, args) : Py_NewRef(Py_NotImplemented);
+    }
+    if (a == nullptr || a->index() > 3 || !weak_number(y, value)) {
+        return Py_NewRef(Py_NotImplemented);
+    }
+    try {
+        PyObject* number {visit_numeric([&](const auto& t) {
+            using T = element_of_t<std::decay_t<decltype(t)>>;
+            return wrap(any_tensor {numerical::tensor<T> {{}, numerical::buffer<T> {static_cast<T>(value)}}});
+        }, *a)};
+        if (number == nullptr) {
+            return nullptr;
+        }
+        PyObject* const pair {Py_BuildValue("(sON)", op, x, number)}; // steals number
+        if (pair == nullptr) {
+            return nullptr;
+        }
+        PyObject* const answer {module_compare(self, pair)};
+        Py_DECREF(pair);
+        return answer;
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
 } // namespace numerical_binding

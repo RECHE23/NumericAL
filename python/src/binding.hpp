@@ -3661,6 +3661,14 @@ PyObject* module_borrowed_unary(PyObject* /*self*/, PyObject* args); // in eleme
 // where they lie (borrow_operand) and a weak Python float or int, of one float or complex dtype, the bits of _binary.
 PyObject* module_borrowed_binary(PyObject* /*self*/, PyObject* args); // in elementwise.cpp
 
+// _fast_binary(op, x, y) -> Tensor or NotImplemented: x op y of two Tensors of one dtype, or of a float or complex Tensor
+// and a weak Python float or int, as _binary computes them (binary_on).
+PyObject* module_fast_binary(PyObject* /*self*/, PyObject* args); // in elementwise.cpp
+
+// _fast_compare(op, x, y) -> bool Tensor or NotImplemented: _compare of a Tensor and a Tensor of its dtype or, of a float
+// or complex one, a weak Python float or int.
+PyObject* module_fast_compare(PyObject* self, PyObject* args); // in elementwise.cpp
+
 // _borrowed_where(condition, x, y) -> Tensor or NotImplemented: where of a bool Tensor or NumPy bool array and two
 // operands read where they lie (borrow_operand) or a weak Python float or int, of one float or complex dtype.
 PyObject* module_borrowed_where(PyObject* /*self*/, PyObject* args); // in elementwise.cpp

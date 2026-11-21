@@ -279,6 +279,11 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
           "and a weak Python number.");
     m.raw("_array_struct", module_array_struct, METH_O,
           "_array_struct(t) -> PyCapsule\nThe __array_struct__ of a Tensor: its elements where they lie, read-only.");
+    m.raw("_fast_binary", module_fast_binary, METH_VARARGS,
+          "_fast_binary(op, x, y) -> Tensor or NotImplemented\nx op y of two Tensors of one dtype, or of a float or complex Tensor and a weak "
+          "Python number.");
+    m.raw("_fast_compare", module_fast_compare, METH_VARARGS,
+          "_fast_compare(op, x, y) -> Tensor or NotImplemented\n_compare of a Tensor and a Tensor of its dtype or a weak Python number.");
     m.raw("_borrowed_where", module_borrowed_where, METH_VARARGS,
           "_borrowed_where(condition, x, y) -> Tensor or NotImplemented\nwhere of a bool condition and operands read where they lie.");
     m.raw("_borrowed_reduce", module_borrowed_reduce, METH_VARARGS,

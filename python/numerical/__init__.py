@@ -777,7 +777,15 @@ def _comparison(op):
     NotImplemented (so ``t == None`` is False, as Python decides)."""
 
     def method(self, other):
-        if type(other) is Tensor and other.dtype == self.dtype:
+        kind = type(other)
+        if kind is Tensor or kind is float or kind is int:  # a Tensor of self's dtype or a weak number, in C (_compare's)
+            try:
+                fast = _numerical._fast_compare(op, self, other)
+            except error as caught:  # shapes that do not broadcast, as _native raises it
+                raise _ShapeError(*caught.args) from None
+            if fast is not NotImplemented:
+                return fast
+        if kind is Tensor and other.dtype == self.dtype:
             a, b = self, other
         else:
             if (type(other) is int and self.dtype in ("int64", "bool")
@@ -3668,6 +3676,15 @@ def _arithmetic(op, reflected=False):
                 shortcut = {(int, 2): "2", (int, -1): "r", (float, 0.5): "h"}.get((kind, other)) if kind in (int, float) else None
             if shortcut is not None:
                 return _native(_numerical._power_shortcut, shortcut, self)
+        if kind is Tensor or kind is float or kind is int:  # a Tensor of self's dtype or a weak number, in C (_binary's)
+            if not _numpy_loops_measured and op in "*/^":
+                _numpy_loops()
+            try:
+                fast = _numerical._fast_binary(op, other, self) if reflected else _numerical._fast_binary(op, self, other)
+            except error as caught:  # shapes that do not broadcast, as _native raises it
+                raise _ShapeError(*caught.args) from None
+            if fast is not NotImplemented:
+                return fast
         if kind is not Tensor and not isinstance(other, _numbers.Number):  # an array-like, read before promoting
             if op in "+-*/" and kind is not list and kind is not tuple:  # a NumPy array of self's dtype, where it lies
                 if not _numpy_loops_measured and op in "*/":

@@ -15,6 +15,10 @@ A change that can break code is listed under **Breaking** and held for a month's
   float64, complex64 and complex128 operands of one dtype, broadcast or not, an M1 Pro 10⁵ doubles added 93 → 25 µs,
   16 of them 2.0 → 0.7 µs, the time of two Tensors. The same bits (but for a NaN's sign, which an x86
   processor takes from whichever operand comes first), and the same errors.
+- **The Tensor operators take a Tensor of their dtype or a Python number in C**, where Python read the number
+  through `asarray` and checked the dtypes: on 16 doubles, an M1 Pro, `t * 2.0` 1.01 → 0.36 µs (NumPy 0.38), `t > 0.5`
+  1.28 → 0.45 µs, `t + t` 0.48 → 0.32 µs. The same answers and errors; an int64 or bool Tensor beside a number, two
+  dtypes and a complex number take the promoting path as before.
 - **`where` reads NumPy arrays where they lie**, a bool condition and operands of one float or complex dtype (or a
   Python float or int beside one), where it copied each into a Tensor first, and **chooses each element by a mask of
   its bits**, where a branch mispredicted half the time on a condition of no pattern: an M1 Pro, 10⁵ doubles, NumPy
