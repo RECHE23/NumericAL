@@ -77,7 +77,9 @@ class FastOperators(unittest.TestCase):
                     if sys.platform == "win32":  # an error relative to the exponent's size: 1.1e-13 to the 150th
                         limits = np.finfo(np.complex64 if dtype == np.complex64 else np.complex128)
                         finite = np.isfinite(got) & np.isfinite(want)
-                        np.testing.assert_allclose(got[finite], want[finite],
+                        # relative to the exponent's size, absolute below the smallest normal number (a subnormal
+                        # result keeps a few bits: one apart is a large fraction of it)
+                        np.testing.assert_allclose(got[finite], want[finite], atol=limits.smallest_normal,
                                                    rtol=100 * limits.eps * max(1.0, abs(exponent)))
                         # one side past the largest number where the other is near it: a rounding apart
                         edge = np.where(np.isfinite(got), got, want)[~finite & (np.isfinite(got) | np.isfinite(want))]
