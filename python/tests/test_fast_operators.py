@@ -75,8 +75,13 @@ class FastOperators(unittest.TestCase):
                         want = bases ** np.asarray(exponent, dtype)
                     got = np.asarray(t ** numerical.asarray(np.asarray(exponent, dtype)))
                     if sys.platform == "win32":  # an error relative to the exponent's size: 1.1e-13 to the 150th
-                        epsilon = np.finfo(np.complex64 if dtype == np.complex64 else np.complex128).eps
-                        np.testing.assert_allclose(got, want, rtol=100 * epsilon * max(1.0, abs(exponent)))
+                        limits = np.finfo(np.complex64 if dtype == np.complex64 else np.complex128)
+                        finite = np.isfinite(got) & np.isfinite(want)
+                        np.testing.assert_allclose(got[finite], want[finite],
+                                                   rtol=100 * limits.eps * max(1.0, abs(exponent)))
+                        # one side past the largest number where the other is near it: a rounding apart
+                        edge = np.where(np.isfinite(got), got, want)[~finite & (np.isfinite(got) | np.isfinite(want))]
+                        self.assertTrue(np.all(np.maximum(abs(edge.real), abs(edge.imag)) > limits.max / 2))
                     else:
                         np.testing.assert_array_equal(got, want)
 
