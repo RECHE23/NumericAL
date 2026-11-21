@@ -132,6 +132,16 @@ class BorrowedOperands(unittest.TestCase):
         flat[:len(values)] = values[:flat.size]
         return x
 
+    def assert_same_bits(self, got, want):
+        # The same dtype, shape and bytes, but for a NaN's sign and payload: an x86 processor gives the first operand's
+        # NaN where two meet, and a compiler may order a product's operands either way in two vectorised loops.
+        got, want = np.asarray(got), np.asarray(want)
+        self.assertEqual((got.dtype, got.shape), (want.dtype, want.shape))
+        parts = (lambda x: x.reshape(-1).view(x.real.dtype)) if want.dtype.kind == "c" else (lambda x: x.reshape(-1))
+        a, b = parts(got), parts(want)
+        self.assertTrue(np.array_equal(np.isnan(a), np.isnan(b)))
+        self.assertEqual(a[~np.isnan(a)].tobytes(), b[~np.isnan(b)].tobytes())
+
     def test_arithmetic_reads_the_arrays_where_they_lie_and_gives_the_tensors_bits(self):
         # + - * / with a NumPy array operand, read where it lies, beside another, a Tensor or a Python float or int of
         # its dtype: the Tensors' result to the byte, of their dtype and shape, for each dtype, broadcast every way
@@ -151,19 +161,16 @@ class BorrowedOperands(unittest.TestCase):
                         for got in (f(a, b), f(ta, b), f(a, tb), {"+": ta + b, "-": ta - b, "*": ta * b, "/": ta / b}[op],
                                     getattr(tb, reflected[op])(a)):
                             self.assertIsInstance(got, numerical.Tensor)
-                            self.assertEqual((got.dtype, got.shape), (str(want.dtype), want.shape))
-                            self.assertEqual(np.asarray(got).tobytes(), want.tobytes())
+                            self.assert_same_bits(got, want)
                         for number in (2.5, -3, 1e300, 2**60 + 1):
                             for args, tensors in (((a, number), (ta, number)), ((number, a), (number, ta))):
-                                got, want_number = f(*args), np.asarray(f(*tensors))
-                                self.assertEqual((got.dtype, got.shape), (str(want_number.dtype), want_number.shape))
-                                self.assertEqual(np.asarray(got).tobytes(), want_number.tobytes())
+                                self.assert_same_bits(f(*args), f(*tensors))
             x = self.special((6, 40), dtype)
             for view in (x[:, ::3], x[::-1], np.asfortranarray(x), self.special((900, 300), dtype)[:, ::2]):
                 tensor = numerical.asarray(np.ascontiguousarray(view))
                 for op, f in functions.items():
                     with self.subTest(dtype=np.dtype(dtype).name, strides=view.strides, op=op):
-                        self.assertEqual(np.asarray(f(view, view)).tobytes(), np.asarray(f(tensor, tensor)).tobytes())
+                        self.assert_same_bits(f(view, view), f(tensor, tensor))
 
     def test_where_reads_the_arrays_where_they_lie_and_chooses_as_the_tensors(self):
         # where with a NumPy bool condition and NumPy array operands, read where they lie, beside Tensors or a Python
@@ -235,9 +242,7 @@ class BorrowedOperands(unittest.TestCase):
                         with self.assertRaises(type(caught)):
                             f(left, right)
                         continue
-                    got = f(left, right)
-                    self.assertEqual((got.dtype, got.shape), (want.dtype, want.shape))
-                    self.assertEqual(np.asarray(got).tobytes(), np.asarray(want).tobytes())
+                    self.assert_same_bits(f(left, right), want)
         borrowed = numerical._numerical._borrowed_binary
         for args in (("%", x, x), ("**", x, x), ("+", [1.0], x), ("+", 1.0, 2.0), ("+", x, "1"), ("+", x, x.astype(np.float32))):
             self.assertIs(borrowed(*args), NotImplemented)

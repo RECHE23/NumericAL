@@ -13,7 +13,8 @@ A change that can break code is listed under **Breaking** and held for a month's
 - **`+`, `-`, `*` and `/` read a NumPy array where it lies**, beside another, a Tensor or a Python float or int, where
   they copied it into a Tensor first (`add`, `subtract`, `multiply`, `divide` and the Tensor operators): for float32,
   float64, complex64 and complex128 operands of one dtype, broadcast or not, an M1 Pro 10⁵ doubles added 93 → 25 µs,
-  16 of them 2.0 → 0.7 µs, the time of two Tensors. The same bits, and the same errors.
+  16 of them 2.0 → 0.7 µs, the time of two Tensors. The same bits (but for a NaN's sign, which an x86
+  processor takes from whichever operand comes first), and the same errors.
 - **`where` reads NumPy arrays where they lie**, a bool condition and operands of one float or complex dtype (or a
   Python float or int beside one), where it copied each into a Tensor first, and **chooses each element by a mask of
   its bits**, where a branch mispredicted half the time on a condition of no pattern: an M1 Pro, 10⁵ doubles, NumPy
