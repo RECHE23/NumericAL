@@ -6412,9 +6412,9 @@ def _variance(a, axis, dtype, ddof):
     squares = _absolute_squares(deviation) if a.dtype.startswith("complex") else deviation * deviation
     total = sum(squares, axis=axis, keepdims=True)
     divisor = _builtins.max(count - ddof, 0)
-    if divisor == 0:
+    if divisor == 0:  # NumPy's: the sum over 0, an infinity (a NaN where it is 0)
         _warnings.warn("Degrees of freedom <= 0 for slice", RuntimeWarning, stacklevel=3)
-    return (total / divisor if divisor else total * _math.nan), axes
+    return total / divisor, axes
 
 
 def _ddof(ddof, correction):

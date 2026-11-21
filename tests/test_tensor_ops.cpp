@@ -2603,6 +2603,25 @@ TEST(prod_cumulative_sums_and_sort_along_an_axis)
   EXPECT(std::isnan(sorted.data()[3].real()));
   const tensor<cplx> imaginary {{3}, {cplx {1.0, nan}, cplx {1.0, 1.0}, cplx {1.0, 1.0}}}; // a NaN imaginary part last
   EXPECT(std::isnan(numerical::sort(imaginary, 0).data()[2].imag()));
+  // NumPy's order (npysort's CLT): no NaN, then a NaN imaginary part by the real parts, a NaN real part by the
+  // imaginary parts, both NaN; every pair against its places, and the line sorted from its reverse.
+  const double            inf     {std::numeric_limits<double>::infinity()};
+  const std::vector<cplx> order   {cplx {0.0, 0.0}, cplx {0.0, 1.0}, cplx {1.0, -1.0}, cplx {1.0, 0.0}, cplx {-inf, nan},
+                                   cplx {0.0, nan}, cplx {1.0, nan}, cplx {nan, 0.0}, cplx {nan, 1.0}, cplx {nan, nan}};
+  bool                    ordered {true};
+  for (std::size_t i {0}; i < order.size(); ++i) {
+    for (std::size_t j {0}; j < order.size(); ++j) {
+      ordered = ordered && numerical::detail::sorts_before(order[i], order[j]) == (i < j);
+    }
+  }
+  EXPECT(ordered);
+  const tensor<cplx> reversed {{order.size()}, numerical::buffer<cplx>(order.rbegin(), order.rend())};
+  const tensor<cplx> resorted {numerical::sort(reversed, 0)};
+  const auto         same_place {[](const cplx& a, const cplx& b) {
+                                   const auto part {[](double x, double y) { return x == y || (std::isnan(x) && std::isnan(y)); }};
+                                   return part(a.real(), b.real()) && part(a.imag(), b.imag());
+                                 }};
+  EXPECT(std::ranges::equal(resorted.data(), order, same_place));
   const tensor<float> single   {{3}, {2.0F, -1.0F, 0.5F}};
   EXPECT(numerical::sort(single, 0).data()[0] == -1.0F && numerical::cumsum(single, 0).data()[2] == 1.5F);
   EXPECT_THROWS((void)numerical::cumsum(grid, 2), numerical::dimension_error);

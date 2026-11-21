@@ -3447,14 +3447,27 @@ namespace numerical {
       return a < b;
     }
 
-    //! \brief Whether \p a sorts before \p b as NumPy sorts complex numbers: by the real parts, then the imaginary
-    //!        parts, each with NaNs last.
+    /*!
+     * \brief Whether \p a sorts before \p b as NumPy sorts complex numbers (npysort's `CLT`): those with no NaN by the
+     *        real parts then the imaginary parts, then those with a NaN imaginary part alone by the real parts, then a
+     *        NaN real part alone by the imaginary parts, then both NaN (`R + Rj < R + nanj < nan + Rj < nan + nanj`).
+     */
     template <split_complex C>
     [[nodiscard]] bool sorts_before(const C& a,
                                     const C& b) noexcept
     {
-      const bool before {sorts_before(a.real(), b.real())};
-      return before || (!sorts_before(b.real(), a.real()) && sorts_before(a.imag(), b.imag()));
+      const bool a_imaginary_nan {std::isnan(a.imag())};
+      const bool b_imaginary_nan {std::isnan(b.imag())};
+      if (a.real() < b.real()) {
+        return !a_imaginary_nan || b_imaginary_nan;
+      }
+      if (a.real() > b.real()) {
+        return b_imaginary_nan && !a_imaginary_nan;
+      }
+      if (a.real() == b.real() || (std::isnan(a.real()) && std::isnan(b.real()))) {
+        return a.imag() < b.imag() || (b_imaginary_nan && !a_imaginary_nan);
+      }
+      return std::isnan(b.real());
     }
   } // namespace detail
 

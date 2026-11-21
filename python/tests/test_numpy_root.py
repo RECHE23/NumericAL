@@ -183,6 +183,15 @@ class NumpyRoot(unittest.TestCase):
             warnings.simplefilter("always")
             self.assertTrue(np.isnan(numerical.var(np.ones(2), ddof=2)))
             self.assertTrue(np.all(np.isnan(np.asarray(numerical.var(np.ones((2, 3)), axis=0, ddof=2)))))
+            # past the elements, NumPy's quotient by 0: an infinity, a NaN where the squares sum to 0
+            for values, ddof in (([1.0, 2.0], 2), ([1.0, 2.0, 4.0], 5), ([1.0], 1)):
+                for dtype in (np.float64, np.float32, np.complex128):
+                    for f in ("var", "std"):
+                        want = float(getattr(np, f)(np.array(values, dtype), ddof=ddof))
+                        got = float(getattr(numerical, f)(np.array(values, dtype), ddof=ddof))
+                        self.assertTrue(got == want or (np.isnan(got) and np.isnan(want)), (f, values, ddof, got, want))
+            np.testing.assert_array_equal(np.asarray(numerical.var(np.array([[1.0, 2.0], [3.0, 3.0]]), axis=1, ddof=2)),
+                                          [np.inf, np.nan])
         self.assertTrue(any(issubclass(w.category, RuntimeWarning) for w in caught))
 
 

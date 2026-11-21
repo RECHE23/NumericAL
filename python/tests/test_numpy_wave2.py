@@ -186,6 +186,19 @@ class NumpyWave2(unittest.TestCase):
                 self.same(numerical.sort(a, axis=axis), np.sort(a, axis=axis))
         z = np.array([1 + 2j, 1 - 1j, np.nan + 0j, 0 + 5j, -1 + 0j])
         self.same(numerical.sort(z), np.sort(z))
+        # a NaN in either part, NumPy's order: no NaN, then a NaN imaginary part by the real parts (-inf + nanj after
+        # 1 + 0j), a NaN real part by the imaginary parts, both NaN; argsort and searchsorted by the same order
+        nan, inf = np.nan, np.inf
+        parts = [complex(nan, nan), complex(nan, 1), complex(1, nan), complex(1, 1), complex(nan, 0), complex(0, nan),
+                 complex(1, 0), complex(-inf, nan), complex(-inf, 0), complex(2, -1)]
+        for dtype in (np.complex128, np.complex64):
+            w = np.array(parts * 3, dtype)
+            self.rng.shuffle(w)
+            with self.subTest(dtype=np.dtype(dtype).name):
+                self.assertEqual(np.asarray(numerical.sort(w)).tobytes(), np.sort(w, kind="stable").tobytes())
+                np.testing.assert_array_equal(np.asarray(numerical.argsort(w)), np.argsort(w, kind="stable"))
+                ordered = np.sort(w, kind="stable")
+                np.testing.assert_array_equal(np.asarray(numerical.searchsorted(ordered, w)), np.searchsorted(ordered, w))
         self.same(numerical.sort(a.astype(np.float32)), np.sort(a.astype(np.float32)))
         mask = self.rng.random((5, 6)) > 0.5
         for axis in (None, 0, -1):

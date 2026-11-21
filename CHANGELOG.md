@@ -29,6 +29,11 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ### Fixed
 
+- **Complex numbers with a NaN sort as NumPy's**: those with none first, then a NaN imaginary part alone by the real
+  parts, a NaN real part alone by the imaginary parts, both NaN last (`sort`, `argsort`, `searchsorted`), where a NaN
+  imaginary part only went after the same real part (`-inf + nanj` sorted before `1 + 0j`).
+- **`var` and `std` past the elements (`ddof ≥ n`) are infinite**, NumPy's quotient by 0 (a NaN where the squares sum
+  to 0), where they were NaN.
 - **A complex power on macOS is NumPy's**: an exponent other than a small integer took libc++'s `std::pow`, which
   computes `exp(b log a)` itself and strayed from the C library's `cpow`, NumPy's, for about half the bases (to
   1.8e-15 relative); it calls `cpow` and `cpowf` there now. Under glibc it was the same already.
