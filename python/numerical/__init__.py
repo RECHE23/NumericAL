@@ -2971,8 +2971,8 @@ def _operand(x):
 
 
 def _real_operand(x):
-    """`x` as a Tensor for a real function (floor, round…): bools, a Tensor's or an array-like's, in float64, the
-    nearest a Tensor has to NumPy's float16 for them."""
+    """`x` as a Tensor for a real function (round, sign…): bools, a Tensor's or an array-like's, in float64, the
+    nearest a Tensor has to NumPy's float16 for them (floor, ceil and trunc keep them, as NumPy's)."""
     t = x if isinstance(x, Tensor) else asarray(x)
     return asarray(t, "float64") if t.dtype == "bool" else t
 
@@ -6749,6 +6749,10 @@ def _real_function(name, doc):
             mapped = _numerical._borrowed_unary(name, x)  # a NumPy array read where it lies
             if mapped is not NotImplemented:
                 return mapped
+        if name in ("floor", "ceil", "trunc"):  # NumPy's: a bool its own floor, ceiling and truncation, still a bool
+            x = x if isinstance(x, Tensor) else asarray(x)
+            if x.dtype == "bool":
+                return x
         x = _real_operand(x)
         if x.dtype.startswith("complex"):
             if name not in _COMPLEX_FUNCTIONS:

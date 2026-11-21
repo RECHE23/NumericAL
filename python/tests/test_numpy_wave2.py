@@ -128,7 +128,14 @@ class NumpyWave2(unittest.TestCase):
             for array in (x, x.astype(np.float32), x[::3], x.reshape(30, 100).T):
                 with self.subTest(name=name, dtype=array.dtype, contiguous=array.flags.c_contiguous):
                     self.same(getattr(numerical, name)(array), getattr(numerical, name)(numerical.asarray(array)))
-        self.same(numerical.floor(np.array([True, False])), np.array([1.0, 0.0]))  # a bool array read as float64
+        for name in ("floor", "ceil", "trunc"):  # a bool its own floor, ceiling and truncation, still a bool, as NumPy's
+            mask = np.array([True, False])
+            got = getattr(numerical, name)(mask)
+            self.assertEqual((got.dtype, np.asarray(got).tolist()), ("bool", getattr(np, name)(mask).tolist()))
+            self.assertEqual(str(getattr(np, name)(mask).dtype), "bool")
+            tensor = numerical.asarray(mask)
+            self.assertIs(getattr(numerical, name)(tensor), tensor)  # an immutable tensor itself
+        self.same(numerical.rint(np.array([True, False])), np.array([1.0, 0.0]))  # NumPy's float16, read as float64
         with self.assertRaises(TypeError):
             numerical.floor(np.array([1j]))
 

@@ -34,6 +34,8 @@ A change that can break code is listed under **Breaking** and held for a month's
   `@`, `matmul`, `dot`, `einsum`, `tensordot`, `vecdot` and `matrix_power` in int64, wrapped modulo 2⁶⁴; `/`, `mean`,
   `var`, `std`, the elementary functions, the linear algebra, the norms and the transforms in float64, as before. A
   Python int past int64 raises OverflowError; `take_along_axis` refuses float indices, as NumPy's.
+- **`floor`, `ceil` and `trunc` of a bool are bools**, the bools themselves, as NumPy's (2.2 and later), where they
+  were float64; `rint`, `round` and the rest compute them in float64 as before (NumPy's float16).
 - **A bool's sum and product are int64**, as NumPy's (`sum`, `prod`, `cumsum`, `cumprod`, their `nan` and
   `cumulative_` forms, `trace`), where they were float64; a list of bools computed on is read as int64.
 - **`eye(N, M=None, k=0, dtype=float)`**, NumPy's signature: the second positional argument is the columns, where it
