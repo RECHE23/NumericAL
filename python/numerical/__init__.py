@@ -313,10 +313,12 @@ def _weak(value):
 
 def _beside_weak(dtype, value):
     """The dtype of a tensor of `dtype` beside the Python number `value`: its own, complex for a complex `value`; a
-    bool tensor's beside a bool, else the number's own (float64 for an int, as :func:`asarray` reads one); an int64
-    tensor's beside an int, float64 beside a float."""
+    bool tensor's beside a bool, else the number's own (int64 for an int, as :func:`asarray` reads one, float64 for a
+    float); an int64 tensor's beside an int, float64 beside a float."""
     if dtype == "bool":
-        return "bool" if isinstance(value, bool) else "complex128" if isinstance(value, complex) else "float64"
+        if isinstance(value, bool):
+            return "bool"
+        return "int64" if isinstance(value, int) else "complex128" if isinstance(value, complex) else "float64"
     if dtype == "int64" and not isinstance(value, int):
         return "complex128" if isinstance(value, complex) else "float64"
     if isinstance(value, complex) and not dtype.startswith("complex"):
@@ -3793,12 +3795,17 @@ def _numpy_loops():
                                 bool(reductions and late))
 
 
+_SEQUENCES = (list, tuple, str, bytes, bytearray)  # the built-in sequences ``*`` repeats by an int
+
+
 def _arithmetic(op, reflected=False):
     """The Tensor method for `op` ("+", "-", "*", "/", "^" for ``**``, "|" for ``//``, "%"), element-wise and broadcast as NumPy's; a reflected
     one (``2 - t``) puts the other operand first. Anything :func:`asarray` cannot read is NotImplemented."""
 
     def method(self, other):
         kind = type(other)
+        if op == "*" and kind in _SEQUENCES and not self.shape and self.dtype in ("int64", "bool"):
+            return NotImplemented  # a sequence repeated by an integer scalar (``[0] * n``), as NumPy's integer scalars
         if op == "^" and not reflected and self.dtype.startswith("complex"):
             # NumPy takes an array to the Python integer 2 or -1, or the float 0.5, by its square, its reciprocal or its
             # square root, not by its power; before 2.3, to any real number equal to them
@@ -4206,10 +4213,12 @@ Tensor.all = _reduction_method(all)
 
 
 def _shape(shape):
-    """A shape argument as a tuple: an integer is a rank-1 shape, as NumPy reads it."""
-    if isinstance(shape, _numbers.Integral):
+    """A shape argument (or reps, shifts, axes: integers, one or a sequence) as a tuple: an integer is a rank-1 shape, as NumPy reads it, and so is anything with an index
+    (an integer scalar Tensor or array, what a count or an ``argmax`` gives)."""
+    try:
         return (_operator.index(shape),)
-    return tuple(_operator.index(extent) for extent in shape)
+    except TypeError:
+        return tuple(_operator.index(extent) for extent in shape)
 
 
 def reshape(a, shape, *, copy=None):
@@ -6341,7 +6350,7 @@ def ravel(a):
 
 def _normalized_axes(axes, rank, name):
     """`axes` (an integer or a sequence) as distinct non-negative axes of a rank-`rank` result."""
-    axes = (axes,) if isinstance(axes, _numbers.Integral) else tuple(axes)
+    axes = _shape(axes)
     resolved = []
     for axis in axes:
         axis = _operator.index(axis)
@@ -7209,7 +7218,7 @@ def tile(A, reps):  # noqa: N803 (numpy.tile's argument)
                           [1, 2, 1, 2]], dtype=int64)
     """
     a = _tensor(A)
-    reps = (_operator.index(reps),) if isinstance(reps, _numbers.Integral) else tuple(_operator.index(r) for r in reps)
+    reps = _shape(reps)
     rank = _builtins.max(len(reps), len(a.shape))
     shape = (1,) * (rank - len(a.shape)) + a.shape
     reps = (1,) * (rank - len(reps)) + reps
@@ -7381,8 +7390,8 @@ def roll(a, shift, axis=None):
     a = _tensor(a)
     if axis is None:
         return reshape(roll(reshape(a, (-1,)), shift, 0), a.shape)
-    shifts = (shift,) if isinstance(shift, _numbers.Integral) else tuple(shift)
-    axes = (axis,) if isinstance(axis, _numbers.Integral) else tuple(axis)
+    shifts = _shape(shift)
+    axes = _shape(axis)
     if len(shifts) == 1:
         shifts *= len(axes)
     elif len(axes) == 1:
@@ -9395,8 +9404,7 @@ def ravel_multi_index(multi_index, dims, mode="raise", order="C"):
 def unravel_index(indices, shape, order="C"):
     """The coordinates of the flat `indices` in an array of `shape`, as ``numpy.unravel_index``: a tuple of int64
     tensors (numbers for a number), row-major (`order` "C") or column-major ("F")."""
-    dims = (_operator.index(shape),) if isinstance(shape, _numbers.Integral) else tuple(
-        _operator.index(d) for d in shape)
+    dims = _shape(shape)
     if order not in ("C", "F"):
         raise ValueError("only 'C' or 'F' order is permitted")
     flat = _as_numpy_reads(indices)
@@ -10828,7 +10836,7 @@ def array_equiv(a1, a2):
 def resize(a, new_shape):
     """`a`'s elements, flattened and repeated as often as needed, in `new_shape`, as ``numpy.resize``."""
     a = reshape(_tensor(a), (-1,))
-    new_shape = (_operator.index(new_shape),) if isinstance(new_shape, _numbers.Integral) else tuple(new_shape)
+    new_shape = _shape(new_shape)
     if _builtins.any(e < 0 for e in new_shape):
         raise ValueError("all elements of `new_shape` must be non-negative")
     total = _math.prod(new_shape)
