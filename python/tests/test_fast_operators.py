@@ -87,6 +87,21 @@ class FastOperators(unittest.TestCase):
                     else:
                         np.testing.assert_array_equal(got, want)
 
+    def test_a_numpy_scalar_first_gives_a_tensor_of_numpys_dtype(self):
+        # A NumPy scalar is of its own dtype (NumPy 2's strong scalars): first beside a Tensor it is read as a rank-0
+        # Tensor and promoted, where its own operator answered a NumPy array.
+        for scalar in (np.float64(2.5), np.float32(2.5), np.int64(3), np.complex128(1 - 2j), np.bool_(True)):
+            for values in (np.array([1.0, -2.0, 4.0]), np.array([1.0, -2.0, 4.0], np.float32)):
+                t = numerical.asarray(values)
+                for name in ("add", "subtract", "multiply", "divide", "maximum", "minimum", "greater", "equal"):
+                    if name in ("maximum", "minimum", "greater") and isinstance(scalar, np.complexfloating):
+                        continue
+                    with self.subTest(scalar=repr(scalar), dtype=t.dtype, function=name):
+                        got, want = getattr(numerical, name)(scalar, t), getattr(np, name)(scalar, values)
+                        self.assertIsInstance(got, numerical.Tensor)
+                        self.assertEqual(got.dtype, str(want.dtype))
+                        np.testing.assert_allclose(np.asarray(got), want, rtol=1e-6)
+
     def test_two_tensors_of_one_dtype_broadcast_as_numpy(self):
         rng = np.random.default_rng(8)
         for dtype in (np.float64, np.float32, np.complex128, np.int64):

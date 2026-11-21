@@ -29,6 +29,9 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ### Fixed
 
+- **A NumPy scalar first beside a Tensor gives a Tensor**: `numerical.multiply(np.float64(2), t)` (and `add`,
+  `subtract`, `divide`, `floor_divide`, `remainder`) answered a NumPy array, the scalar's own operator having
+  computed it; the scalar is read as a rank-0 Tensor of its dtype and promoted as NumPy's are.
 - **Complex numbers with a NaN sort as NumPy's**: those with none first, then a NaN imaginary part alone by the real
   parts, a NaN real part alone by the imaginary parts, both NaN last (`sort`, `argsort`, `searchsorted`), where a NaN
   imaginary part only went after the same real part (`-inf + nanj` sorted before `1 + 0j`).

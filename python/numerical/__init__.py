@@ -8351,9 +8351,13 @@ def _array_like(x):
 
 
 def _binary_operands(x1, x2):
-    """`x1` and `x2` as operands of an arithmetic operator: Tensors and numbers as they are (a number weak beside a
-    Tensor), anything else read by :func:`_read_beside`, two numbers as tensors."""
-    read1 = x1 if isinstance(x1, (Tensor, _numbers.Number)) else _read_beside(x1, x2)
+    """`x1` and `x2` as operands of an arithmetic operator: Tensors and numbers as they are (a Python number weak
+    beside a Tensor), anything else read by :func:`_read_beside`, two numbers as tensors. A first operand that is
+    another number beside a Tensor (a NumPy scalar, of its own dtype as NumPy's are) is read as a rank-0 Tensor, which
+    the operator then promotes as the Tensor's method promotes a second one: left to itself, a NumPy scalar's own
+    operator computes the answer as a NumPy array."""
+    other_number = type(x1) not in _NATIVE_NUMBERS and isinstance(x1, _numbers.Number) and isinstance(x2, Tensor)
+    read1 = x1 if isinstance(x1, (Tensor, _numbers.Number)) and not other_number else _read_beside(x1, x2)
     read2 = x2 if isinstance(x2, (Tensor, _numbers.Number)) else _read_beside(x2, x1)
     if not isinstance(read1, Tensor) and not isinstance(read2, Tensor):
         read1 = _operand(read1)
