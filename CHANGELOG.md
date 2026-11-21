@@ -27,6 +27,14 @@ A change that can break code is listed under **Breaking** and held for a month's
   as before), where NumPy built the `__array_interface__` dict on every conversion, and so does every NumPy function
   given a Tensor: 0.70 → 0.39 µs a conversion.
 
+### Added
+
+- **Development**: `make bench-fuzz FAMILY=array` draws NumPy's array operations against NumPy (element-wise
+  arithmetic and functions, comparisons and `where`, the reductions and `cumsum`, `sort`, `argsort`, `unique`, `isin`,
+  `intersect1d`, `quantile`, `take`, boolean and integer indexing, `concatenate`; float64, float32, int64 and
+  complex128), apart from the NumPy figures BENCHMARKS.md follows, and every case of every family has a time limit
+  (`TIMEOUT=`, 30 s a side by default) past which it is reported and left out, where one slow case held a run for hours.
+
 ### Fixed
 
 - **A NumPy scalar first beside a Tensor gives a Tensor**: `numerical.multiply(np.float64(2), t)` (and `add`,

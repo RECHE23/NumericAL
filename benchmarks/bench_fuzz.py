@@ -116,6 +116,22 @@ SCIPY_LIMITS = {"solve_continuous_are": 300, "solve_discrete_are": 300, "logm": 
                 "solve_discrete_lyapunov": 400}
 # scipy.linalg works in double and single precision alike; the drawn dtypes as the NumPy family's.
 SCIPY_DTYPES = DTYPES
+
+# The array family (--family array): NumPy's array operations, outside the linear algebra, against NumPy, a population
+# of its own: element-wise arithmetic and functions, comparisons and where, reductions and running sums, sorting,
+# sets, indexing, joining. Weights and dimensions as OPS's: an m × n array (a reduction or a sort along `spec`'s axis).
+ARRAY_OPS = {
+    "add": (3, 2), "multiply-scalar": (2, 2), "divide": (1, 2), "exp": (2, 2), "sin": (1, 2), "greater": (1, 2),
+    "where": (2, 2), "sum": (3, 2), "mean": (1, 2), "max": (2, 2), "cumsum": (1, 2), "clip": (1, 2),
+    "sort": (2, 2), "argsort": (2, 2), "unique": (2, 2), "isin": (1, 2), "intersect1d": (1, 2), "quantile": (1, 2),
+    "take": (1, 2), "mask": (2, 2), "fancy": (1, 2), "concatenate": (1, 2),
+}
+# The array family's dtypes: int64 too, which sorting and the sets see most.
+ARRAY_DTYPES = (("float64", 0.40), ("float32", 0.20), ("int64", 0.25), ("complex128", 0.15))
+# Its operations no complex number has (an order, a quantile, a clip, the sets by order): drawn complex, float64.
+ARRAY_REAL = frozenset(("greater", "max", "clip", "sort", "argsort", "unique", "isin", "intersect1d", "quantile"))
+# Those along an axis: every element, the first or the last.
+ARRAY_AXES = frozenset(("sum", "mean", "max", "cumsum", "sort", "argsort", "quantile", "concatenate"))
 # The operations both C++ sides have a function for: Eigen has no einsum, NumericAL's C++ API no matrix norm.
 CPP_NA = {"einsum-product": "no Eigen function", "einsum-reduce": "no Eigen function", "einsum-each": "no Eigen function",
           "norm": "no NumericAL C++ function", **{op: "no Eigen function" for op in FFT_OPS + ("fft2",)}}
@@ -143,6 +159,8 @@ def draw_case(seed, index, largest, ops, family="numpy"):
     """Case `index` of the run seeded `seed`: the same in every process."""
     if family == "scipy":
         return draw_scipy_case(seed, index, largest, ops)
+    if family == "array":
+        return draw_array_case(seed, index, largest, ops)
     rng = np.random.default_rng([seed, index])
     op = weighted(rng, [(name, OPS[name][0]) for name in ops])
     dims = [min(log_size(rng, largest), LIMITS.get(op, largest)) for _ in range(OPS[op][1])]
@@ -178,6 +196,107 @@ def draw_scipy_case(seed, index, largest, ops):
         dims = [max(1, int(d * 0.8)) for d in dims]
     return {"index": index, "op": op, "dims": dims, "dtype": weighted(rng, SCIPY_DTYPES),
             "layout": weighted(rng, LAYOUTS), "spec": None}
+
+
+def draw_array_case(seed, index, largest, ops):
+    """Case `index` of the array family's run seeded `seed`: its operation, the array's two dimensions, dtype, layout
+    and, for one along an axis, the axis (None, 0 or -1)."""
+    rng = np.random.default_rng([seed, index, 0xa77])
+    op = weighted(rng, [(name, ARRAY_OPS[name][0]) for name in ops])
+    dims = [log_size(rng, largest) for _ in range(ARRAY_OPS[op][1])]
+    dtype = weighted(rng, ARRAY_DTYPES)
+    if op in ARRAY_REAL and dtype == "complex128":
+        dtype = "float64"
+    axis = ["None", "0", "-1"][int(rng.integers(3))] if op in ARRAY_AXES else None
+    if op == "concatenate" and axis == "None":
+        axis = "0"
+    return {"index": index, "op": op, "dims": dims, "dtype": dtype, "layout": weighted(rng, LAYOUTS), "spec": axis}
+
+
+def array_values(rng, shape, dtype, distinct=None):
+    """An operand of `dtype`: normal values (integers to ±1000), or integers below `distinct` (duplicates, for the
+    sets and for unique) in that dtype."""
+    if distinct is not None:
+        return rng.integers(0, max(distinct, 1), size=shape).astype(dtype)
+    if np.dtype(dtype).kind == "i":
+        return rng.integers(-1000, 1000, size=shape).astype(dtype)
+    return matrix(rng, shape, dtype)
+
+
+def build_array(case):
+    """The array family's case: its operands and its two calls, (numerical_call, numpy_call, operands)."""
+    rng = np.random.default_rng([case["index"], 0x5eed])
+    op, (m, n), dtype = case["op"], case["dims"], np.dtype(case["dtype"])
+    axis = None if case["spec"] in (None, "None") else int(case["spec"])
+    a = array_values(rng, (m, n), dtype, distinct=(m * n) // 4 if op in ("unique", "isin", "intersect1d") else None)
+    operands = [a]
+    if op == "add":
+        operands.append(array_values(rng, (m, n), dtype))
+        ours, theirs = nl.add, np.add
+    elif op == "multiply-scalar":
+        ours, theirs = (lambda x: nl.multiply(x, 3)), (lambda x: np.multiply(x, 3))
+    elif op == "divide":
+        operands.append(array_values(rng, (m, n), dtype) + (3 if dtype.kind == "i" else 0))
+        operands[1][operands[1] == 0] = 1
+        ours, theirs = nl.divide, np.divide
+    elif op in ("exp", "sin"):
+        ours, theirs = getattr(nl, op), getattr(np, op)
+        if op == "exp":
+            operands[0] = (a / 1000 if dtype.kind == "i" else a).astype(dtype)  # no overflow to compare
+    elif op == "greater":
+        ours, theirs = (lambda x: nl.greater(x, 0)), (lambda x: np.greater(x, 0))
+    elif op == "where":
+        operands = [a > 0, a, array_values(rng, (m, n), dtype)]
+        ours, theirs = nl.where, np.where
+    elif op in ("sum", "mean", "max", "cumsum", "sort", "argsort"):
+        ours_fn, theirs_fn = getattr(nl, op), getattr(np, op)
+        ours, theirs = (lambda x: ours_fn(x, axis=axis)), (lambda x: theirs_fn(x, axis=axis))
+    elif op == "clip":
+        ours, theirs = (lambda x: nl.clip(x, -0.5, 0.5)), (lambda x: np.clip(x, -0.5, 0.5))
+    elif op == "quantile":
+        ours, theirs = (lambda x: nl.quantile(x, 0.3, axis=axis)), (lambda x: np.quantile(x, 0.3, axis=axis))
+    elif op == "unique":
+        ours, theirs = nl.unique, np.unique
+    elif op in ("isin", "intersect1d"):
+        operands.append(array_values(rng, (max(1, n),), dtype, distinct=(m * n) // 4))
+        ours, theirs = getattr(nl, op), getattr(np, op)
+    elif op == "take":
+        operands.append(rng.integers(0, m * n, size=max(1, (m * n) // 2)))
+        ours, theirs = nl.take, np.take
+    elif op == "mask":
+        operands.append(rng.random((m, n)) < 0.5)
+        ours, theirs = (lambda x, keep: x[keep]), (lambda x, keep: x[keep])
+    elif op == "fancy":
+        operands.append(rng.integers(0, m, size=max(1, m // 2)))
+        ours, theirs = (lambda x, rows: x[rows]), (lambda x, rows: x[rows])
+    elif op == "concatenate":
+        operands.append(array_values(rng, (m, n), dtype))
+        ours, theirs = (lambda x, y: nl.concatenate([x, y], axis=axis)), (lambda x, y: np.concatenate([x, y], axis=axis))
+    else:  # pragma: no cover - every drawn operation is listed above
+        raise ValueError(op)
+    arrived = [arrive(x, case["layout"]) if x.dtype != bool else x for x in operands]
+    ours_in = [nl.asarray(x) for x in arrived] if case["layout"] == "tensor" else arrived
+    if op in ("take", "fancy") and case["layout"] == "tensor":
+        ours_in[1] = arrived[1]  # an index list as NumPy's
+    return (lambda: ours(*ours_in)), (lambda: theirs(*arrived)), operands
+
+
+def agrees_array(case, ours, theirs, operands):
+    """Whether NumericAL's answer is NumPy's: the same values where the operation computes none (an order, a choice,
+    a gather, a set), within the dtype's tolerance where it does; a sort's indices by the values they order (NumPy's
+    argsort is not stable: equal values' indices may differ)."""
+    op = case["op"]
+    if op == "argsort":
+        axis = None if case["spec"] in (None, "None") else int(case["spec"])
+        a = np.asarray(operands[0])
+        flat = a.reshape(-1) if axis is None else a
+        got = np.take_along_axis(flat, np.asarray(ours), axis=-1 if axis is None else axis)
+        return relative(got, np.sort(flat, axis=-1 if axis is None else axis)) == 0
+    exact = op in ("greater", "where", "max", "clip", "sort", "unique", "isin", "intersect1d", "take", "mask", "fancy",
+                   "concatenate") or (case["dtype"] == "int64" and op in ("add", "multiply-scalar", "sum", "cumsum"))
+    if exact:
+        return relative(ours, theirs) == 0
+    return relative(ours, theirs) < tolerance(case["dtype"], max(case["dims"]))
 
 
 def matrix(rng, shape, dtype):
@@ -486,17 +605,48 @@ def fastest(fn, rounds, target=TARGET):
     return min(batch_time(fn, number) for _ in range(rounds))
 
 
+FAMILY_BUILD = {"numpy": build, "scipy": build_scipy, "array": build_array}
+FAMILY_AGREES = {"numpy": agrees, "scipy": agrees_scipy, "array": agrees_array}
+FAMILY_OPS = {"numpy": OPS, "scipy": SCIPY_OPS, "array": ARRAY_OPS}
+
+
+class CaseTimeout(Exception):
+    """A case past --timeout seconds."""
+
+
+def _alarm(signum, frame):
+    raise CaseTimeout
+
+
+def within(seconds, fn):
+    """`fn()`, or CaseTimeout past `seconds` (no limit where the platform has no interval timer, or at 0)."""
+    import signal
+    if not seconds or not hasattr(signal, "setitimer"):
+        return fn()
+    previous = signal.signal(signal.SIGALRM, _alarm)
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        return fn()
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
+
+
 def side_main(args):
     """One library's times for every case, as JSON on the standard output."""
     times = {}
     for case in cases_of(args):
-        ours, theirs, _ = (build_scipy if args.family == "scipy" else build)(case)
-        times[case["index"]] = fastest(ours if args.side == "numerical" else theirs, args.rounds)
+        ours, theirs, _ = FAMILY_BUILD[args.family](case)
+        try:
+            times[case["index"]] = within(args.timeout, lambda: fastest(ours if args.side == "numerical" else theirs,
+                                                                        args.rounds))
+        except CaseTimeout:
+            times[case["index"]] = None  # past --timeout: reported, left out
     json.dump(times, sys.stdout)
 
 
 def cases_of(args):
-    ops = args.ops.split(",") if args.ops else list(SCIPY_OPS if args.family == "scipy" else OPS)
+    ops = args.ops.split(",") if args.ops else list(FAMILY_OPS[args.family])
     indices = [int(i) for i in args.only.split(",")] if args.only else range(args.cases)
     return [draw_case(args.seed, i, args.largest, ops, args.family) for i in indices]
 
@@ -629,10 +779,15 @@ def main():
     parser.add_argument("--seed", type=int, default=20261021)
     parser.add_argument("--largest", type=int, default=1024)
     parser.add_argument("--rounds", type=int, default=5, help="batches per case in each pass")
-    parser.add_argument("--family", choices=("numpy", "scipy"), default="numpy",
-                        help="numpy (the default): NumPy's operations against NumPy; scipy: scipy.linalg's against SciPy")
+    parser.add_argument("--family", choices=("numpy", "scipy", "array"), default="numpy",
+                        help="numpy (the default): NumPy's linear algebra and transforms against NumPy; scipy: "
+                             "scipy.linalg's against SciPy; array: NumPy's element-wise, reduction, sorting, set and "
+                             "indexing operations against NumPy")
     parser.add_argument("--ops", default="", help="a comma-separated subset of: " + ", ".join(OPS)
-                        + "; with --family scipy, of: " + ", ".join(SCIPY_OPS))
+                        + "; with --family scipy, of: " + ", ".join(SCIPY_OPS)
+                        + "; with --family array, of: " + ", ".join(ARRAY_OPS))
+    parser.add_argument("--timeout", type=float, default=30.0,
+                        help="seconds a case may take on a side, its batches together, before it is left out (0: none)")
     parser.add_argument("--only", default="", help="comma-separated case indices (to reproduce a reported case)")
     parser.add_argument("--worst", type=int, default=20)
     parser.add_argument("--json", default="", help="write every case and its times here")
@@ -647,8 +802,8 @@ def main():
     if args.side:
         side_main(args)
         return 0
-    if args.family == "scipy" and args.eigen:
-        print("--eigen compares NumPy's operations from C++: not with --family scipy")
+    if args.family != "numpy" and args.eigen:
+        print(f"--eigen compares NumPy's operations from C++: not with --family {args.family}")
         return 2
     if not args.eigen:
         return compare(args, None)
@@ -678,7 +833,8 @@ def compare(args, cpp):
     their operands) adds the comparison of Eigen with NumericAL from C++."""
     cases = cases_of(args)
     child = [sys.executable, __file__, "--seed", str(args.seed), "--largest", str(args.largest), "--rounds",
-             str(args.rounds), "--cases", str(args.cases), "--family", args.family] + (["--ops", args.ops] if args.ops else []) \
+             str(args.rounds), "--cases", str(args.cases), "--family", args.family, "--timeout", str(args.timeout)] \
+        + (["--ops", args.ops] if args.ops else []) \
         + (["--only", args.only] if args.only else [])
     sides = {"numerical": child + ["--side", "numerical"], "numpy": child + ["--side", "numpy"]}
     if cpp:
@@ -693,7 +849,7 @@ def compare(args, cpp):
             out = subprocess.run(command + answers, check=True, capture_output=True, text=True).stdout
             for index, seconds in json.loads(out).items():
                 previous = best[side].get(int(index), math.inf)
-                best[side][int(index)] = min(previous, seconds)
+                best[side][int(index)] = None if seconds is None or previous is None else min(previous, seconds)
 
     scipy = args.family == "scipy"
     if scipy:
@@ -722,13 +878,19 @@ def compare(args, cpp):
     print(f"{len(cases)} cases, seed {args.seed}, dimensions up to {args.largest} on a log scale, "
           f"{time.perf_counter() - started:.0f} s of timing")
 
-    rows, divergent, cpp_rows, cpp_divergent = [], [], [], []
+    rows, divergent, cpp_rows, cpp_divergent, timed_out = [], [], [], [], []
     for case in cases:
-        ours_fn, theirs_fn, operands = (build_scipy if scipy else build)(case)
+        ours_fn, theirs_fn, operands = FAMILY_BUILD[args.family](case)
+        if best["numerical"].get(case["index"]) is None or best["numpy"].get(case["index"]) is None:
+            timed_out.append(case)  # either side past --timeout: neither timed nor checked
+            continue
         theirs = None
         try:
-            theirs = theirs_fn()
-            ok = (agrees_scipy if scipy else agrees)(case, ours_fn(), theirs, operands)
+            theirs = within(args.timeout, theirs_fn)
+            ok = FAMILY_AGREES[args.family](case, within(args.timeout, ours_fn), theirs, operands)
+        except CaseTimeout:
+            timed_out.append(case)
+            continue
         except Exception as caught:  # an exception where NumPy answers is a divergence too
             ok = False
             case["error"] = repr(caught)
@@ -745,6 +907,10 @@ def compare(args, cpp):
                 t_ours, t_eigen = best["numerical-cpp"][case["index"]], best["eigen-cpp"][case["index"]]
                 cpp_rows.append(dict(case, numerical_cpp=t_ours, eigen=t_eigen, eigen_ratio=t_eigen / t_ours))
 
+    if timed_out:
+        print(f"\n{len(timed_out)} case(s) past --timeout {args.timeout} s on a side (left out, not checked):")
+        for case in timed_out:
+            print(f"  #{case['index']} {case['op']} {case['dims']} {case['dtype']} {case['layout']} {case.get('spec') or ''}")
     if divergent:
         print(f"\n{len(divergent)} case(s) where NumericAL's answer is not {'SciPy' if scipy else 'NumPy'}'s (not timed):")
         for case in divergent:
@@ -779,7 +945,8 @@ def compare(args, cpp):
 
     if args.json:
         summary = dict(seed=args.seed, largest=args.largest, family=args.family, numerical=nl.__version__,
-                       numpy=np.__version__, machine=platform.machine(), rows=rows, divergent=divergent)
+                       numpy=np.__version__, machine=platform.machine(), rows=rows, divergent=divergent,
+                       timed_out=timed_out)
         if scipy:
             summary["scipy"] = scipy_module.__version__
         if cpp:
