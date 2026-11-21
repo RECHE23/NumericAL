@@ -8,6 +8,15 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Fixed
+
+- **C++: a view that repeats elements is read as it is**: a slice with a step of 0 (a row or a column repeated) that
+  starts at the first element and counts as many elements as its buffer was taken for a transpose of the whole, so
+  `+` and the other operations on two such views, `einsum` (`ij->j`, `ij->i`, `ij->ji`), the sums along an axis, the
+  transforms and, past 2¹⁴ elements, `data()` and `materialized()` read the buffer in place of the view (rows 0 and 0
+  of a 2 × 300 matrix, `s + s` at (1, 5): 22 where 10). A view is now laid out as a transpose only where its strides
+  are a transpose's. Python's indexing takes no step of 0 (NumPy's rule) and was not reached. Found by an audit
+
 ## 2026.11.20 — 2026-11-20
 
 ### Changed

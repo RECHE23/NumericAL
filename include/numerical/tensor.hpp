@@ -33,6 +33,7 @@
 #include <mutex>
 #include <numeric>
 #include <optional>
+#include <ranges>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -289,15 +290,11 @@ namespace numerical {
      */
     [[nodiscard]] std::optional<std::pair<tensor, std::vector<std::size_t>>> laid_out() const
     {
-      if (copy_ == nullptr || offset_ != 0 || count_ != data_->size()) {
+      if (copy_ == nullptr || !permutes_elements()) {
         return std::nullopt;
       }
-      // Slices and transposes reach each element at most once and a slice starting past the first is offset: from the
-      // first, every element is a permutation's, its strides row-major's (\ref copied_out); an axis of extent 1 moves
-      // nothing and lies anywhere among its ties.
-      std::vector<std::size_t> order(shape_.size());
-      std::iota(order.begin(), order.end(), std::size_t {0});
-      std::stable_sort(order.begin(), order.end(), [this](std::size_t a, std::size_t b) { return strides_[a] > strides_[b]; });
+      // An axis of extent 1 moves nothing and lies anywhere among its ties.
+      std::vector<std::size_t> order {lying_order()};
       std::vector<std::size_t> shape(order.size());
       for (std::size_t k {0}; k < order.size(); ++k) {
         shape[k] = shape_[order[k]];
@@ -392,6 +389,39 @@ namespace numerical {
     }
 
   private:
+
+    //! \brief This view's axes from the widest stride to the narrowest, ties in their order.
+    [[nodiscard]] std::vector<std::size_t> lying_order() const
+    {
+      std::vector<std::size_t> order(shape_.size());
+      std::iota(order.begin(), order.end(), std::size_t {0});
+      std::stable_sort(order.begin(), order.end(), [this](std::size_t a, std::size_t b) { return strides_[a] > strides_[b]; });
+      return order;
+    }
+
+    /*!
+     * \brief Whether this view reaches every element of its buffer once, from the first: its axes longer than 1, from
+     *        the widest stride to the narrowest, have the strides of a row-major tensor of those extents (a transpose's).
+     *        A slice that only starts at the first element and counts as many (a step of 0 repeating a row, a reversed
+     *        axis of extent 1 beside a longer one) reaches some elements twice and others never: not one.
+     */
+    [[nodiscard]] bool permutes_elements() const
+    {
+      if (offset_ != 0 || count_ != data_->size()) {
+        return false;
+      }
+      std::size_t acc {1};
+      for (const std::size_t axis : std::views::reverse(lying_order())) {
+        if (shape_[axis] < 2) {
+          continue;
+        }
+        if (strides_[axis] != static_cast<std::ptrdiff_t>(acc)) {
+          return false;
+        }
+        acc *= shape_[axis];
+      }
+      return true;
+    }
 
     //! \brief A view's elements in row-major order, copied out by the first \ref data call and shared with the view's
     //!        copies.
@@ -497,10 +527,7 @@ namespace numerical {
                        // 3.7 µs, 128 × 128 equal); its tiles and threads pay from 256 × 256 (28 against 47 µs). They take a
                        // permutation of the whole of the elements only (\ref transposed's): a slice's rows, past it, on the threads.
                        constexpr std::size_t read_directly {std::size_t {1} << 14};
-                       // A view of every element from the first that lies (slices and transposes reach each element once, a
-                       // reversed axis starting past the first) is a permutation of the whole: its strides positive, row-major's.
-                       const bool            permutation {offset_ == 0 && count_ == data_->size()};
-                       if (count_ <= read_directly || !permutation) {
+                       if (count_ <= read_directly || !permutes_elements()) {
                          copy_->elements = gathered(shape_, strides_, offset_, *data_);
                          return;
                        }

@@ -3190,3 +3190,52 @@ TEST(einsum_reads_a_transposed_matrix_where_it_lies_with_its_copys_bits)
   EXPECT(einsum_of_views_gives_their_copies_bits<float>());
   EXPECT(einsum_of_views_gives_their_copies_bits<std::complex<double>>());
 }
+
+// Views that start at the first element and count as many as their buffer without reaching each once: a step of 0
+// repeating a row or a column, beside a reversed axis and a transpose of each, each element read through the view's
+// strides (t(i, j)), not through a copy; and below and past each size that changes the path (a row of 64 bytes, 512
+// elements, 2^14).
+TEST(views_that_repeat_elements_are_not_taken_for_a_transpose)
+{
+  struct slice
+  {
+    std::array<std::size_t, 2>    starts;
+    std::array<std::ptrdiff_t, 2> steps;
+  };
+  bool                                 right   {true};
+  constexpr std::array<std::size_t, 3> lengths {4, 300, 9000};
+  for (const std::size_t n : lengths) {
+    std::vector<double> values(2 * n);
+    std::iota(values.begin(), values.end(), 0.0);
+    const numerical::tensor<double> t      {{2, n}, values};
+    const std::array<slice, 4>      slices {slice {.starts = {0, 0}, .steps = {0, 1}}, slice {.starts = {0, 0}, .steps = {1, 0}},
+                                            slice {.starts = {1, 0}, .steps = {-1, 1}}, slice {.starts = {0, n - 1}, .steps = {1, -1}}};
+    for (const slice& s : slices) {
+      const auto at {[&values, &s, n](std::size_t i, std::size_t j) {
+                       const auto row {static_cast<std::ptrdiff_t>(s.starts[0]) + (s.steps[0] * static_cast<std::ptrdiff_t>(i))};
+                       const auto col {static_cast<std::ptrdiff_t>(s.starts[1]) + (s.steps[1] * static_cast<std::ptrdiff_t>(j))};
+                       return values.at((static_cast<std::size_t>(row) * n) + static_cast<std::size_t>(col));
+                     }};
+      const numerical::tensor<double> v           {t.sliced({s.starts[0], s.starts[1]}, {s.steps[0], s.steps[1]}, {2, n}, std::vector<bool> {true, true})};
+      const numerical::tensor<double> vt          {v.transposed()};
+      const numerical::tensor<double> copied      {v.materialized()};
+      const numerical::tensor<double> doubled     {v + v};
+      const numerical::tensor<double> doubled_t   {vt + vt};
+      const numerical::tensor<double> flipped     {einsum("ij->ji", v)};
+      const numerical::tensor<double> columns     {einsum("ij->j", v)};
+      const numerical::tensor<double> rows        {einsum("ij->i", v)};
+      const numerical::tensor<double> column_sums {numerical::sum(v, 0)};
+      const numerical::tensor<double> row_sums    {numerical::sum(vt, 0)};
+      std::array<double, 2>           row_total   {0.0, 0.0};
+      for (std::size_t j {0}; j < n; ++j) {
+        right         = right && v.data()[n + j] == at(1, j) && copied.data()[n + j] == at(1, j) && vt.data()[(2 * j) + 1] == at(1, j);
+        right         = right && doubled({1, j}) == 2.0 * at(1, j) && doubled_t({j, 1}) == 2.0 * at(1, j);
+        right         = right && flipped({j, 1}) == at(1, j) && columns({j}) == at(0, j) + at(1, j) && column_sums({j}) == columns({j});
+        row_total[0] += at(0, j);
+        row_total[1] += at(1, j);
+      }
+      right = right && rows({0}) == row_total[0] && rows({1}) == row_total[1] && row_sums({1}) == row_total[1];
+    }
+  }
+  EXPECT(right);
+}
