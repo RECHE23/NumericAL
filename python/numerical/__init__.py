@@ -4212,6 +4212,13 @@ Tensor.any = _reduction_method(any)
 Tensor.all = _reduction_method(all)
 
 
+def _integer(value):
+    """Whether `value` is one integer, as NumPy tells one from a sequence: a Python int or bool, or an integer scalar
+    Tensor (a count, an ``argmax``)."""
+    return isinstance(value, _numbers.Integral) or isinstance(value, Tensor) and not value.shape \
+        and value.dtype in ("int64", "bool")
+
+
 def _shape(shape):
     """A shape argument (or reps, shifts, axes: integers, one or a sequence) as a tuple: an integer is a rank-1 shape, as NumPy reads it, and so is anything with an index
     (an integer scalar Tensor or array, what a count or an ``argmax`` gives)."""
@@ -6366,7 +6373,7 @@ def expand_dims(a, axis):
     """`a` with an axis of extent 1 inserted at each of `axis` (an integer or a tuple, in the result's numbering),
     as ``numpy.expand_dims``."""
     a = _tensor(a)
-    rank = len(a.shape) + (1 if isinstance(axis, _numbers.Integral) else len(tuple(axis)))
+    rank = len(a.shape) + len(_shape(axis))
     inserted = set(_normalized_axes(axis, rank, "expand_dims"))
     extents = iter(a.shape)
     return reshape(a, tuple(1 if k in inserted else next(extents) for k in range(rank)))
@@ -7292,7 +7299,7 @@ def repeat(a, repeats, axis=None):
         a, axis = reshape(a, (-1,)), 0
     axis = _axis(a, axis)
     extent = a.shape[axis]
-    counts = [_operator.index(repeats)] if isinstance(repeats, _numbers.Integral) else _counts(repeats, "repeat")
+    counts = [_operator.index(repeats)] if _integer(repeats) else _counts(repeats, "repeat")
     if _builtins.any(count < 0 for count in counts):
         raise ValueError("repeats may not contain negative values.")
     if _builtins.any(count > 2 ** 63 - 1 for count in counts):
@@ -7446,7 +7453,7 @@ def array_split(ary, indices_or_sections, axis=0):
     a = _tensor(ary)
     axis = _axis(a, axis)
     extent = a.shape[axis]
-    if isinstance(indices_or_sections, _numbers.Integral):
+    if _integer(indices_or_sections):
         sections = _operator.index(indices_or_sections)
         if sections <= 0:
             raise ValueError("number sections must be larger than 0.")
@@ -7470,8 +7477,8 @@ def split(ary, indices_or_sections, axis=0):
         [numerical.Tensor([1, 2], dtype=int64), numerical.Tensor([3, 4], dtype=int64)]
     """
     a = _tensor(ary)
-    if isinstance(indices_or_sections, _numbers.Integral) and indices_or_sections > 0 \
-            and a.shape[_axis(a, axis)] % indices_or_sections:
+    if _integer(indices_or_sections) and indices_or_sections > 0 \
+            and a.shape[_axis(a, axis)] % _operator.index(indices_or_sections):
         raise ValueError("array split does not result in an equal division")
     return array_split(a, indices_or_sections, axis)
 
@@ -10736,7 +10743,7 @@ def _partition_positions(a, kth, axis):
     if isinstance(kth, (list, tuple)) and not kth:  # NumPy's: an empty list reads as float64
         raise TypeError("Partition index must be integer")
     positions = []
-    for k in ([kth] if isinstance(kth, _numbers.Integral) else _counts(kth, "partition")):
+    for k in ([_operator.index(kth)] if _integer(kth) else _counts(kth, "partition")):
         if 0 in a.shape:  # NumPy's: no position checked where there is nothing to arrange
             continue
         if not -extent <= k < extent:

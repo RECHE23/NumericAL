@@ -389,9 +389,25 @@ class KeptOutOfTheArithmetic(unittest.TestCase):
                 expected = op(x, other)
                 with self.subTest(other=other, op=op.__name__):
                     got = op(mask, other)
-                    # NumPy's integer (int64, or int32 under a 32-bit CPython or NumPy 1 on Windows) is float64 here
-                    self.assertEqual(got.dtype, str(expected.dtype) if expected.dtype.kind not in "iu" else "float64")
+                    # NumPy's integer (int64, or int32 under a 32-bit CPython or NumPy 1 on Windows) is int64 here
+                    self.assertEqual(got.dtype, str(expected.dtype) if expected.dtype.kind not in "iu" else "int64")
                     self.assertTrue(np.array_equal(np.asarray(got), expected, equal_nan=True))
+
+    def test_a_mask_beside_a_python_int_is_int64(self):
+        # As NumPy's: the int is weak and of its own kind, so the bools count as 0 and 1 in int64, not float64.
+        mask = numerical.asarray([True, False, True])
+        x = np.array([True, False, True])
+        for name in ("add", "subtract", "multiply", "floor_divide", "remainder", "power", "maximum", "minimum"):
+            with self.subTest(name=name):
+                got = getattr(numerical, name)(mask, 3)
+                self.assertEqual(got.dtype, "int64")
+                self.assertEqual(got.tolist(), getattr(np, name)(x, 3).tolist())
+        self.assertEqual((mask * 3).tolist(), [3, 0, 3])
+        self.assertEqual((3 - mask).dtype, "int64")
+        self.assertEqual(numerical.result_type(mask, 1), "int64")
+        self.assertEqual(numerical.where(mask, mask, 7).tolist(), [1, 7, 1])
+        self.assertEqual((mask & True).dtype, "bool")
+        self.assertEqual((mask * 2.5).dtype, "float64")
 
     def test_a_bool_array_like_takes_a_single_precision_tensors_dtype(self):
         # Beside a float32 or complex64 Tensor, a NumPy bool array or a list of bools keeps NumPy's single precision,

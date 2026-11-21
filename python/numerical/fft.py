@@ -8,7 +8,6 @@ along any axis; they depend only on the path (portable, or the vector units, NEO
 """
 
 import builtins as _builtins
-import numbers as _numbers
 import operator as _operator
 import sys as _sys
 
@@ -299,9 +298,10 @@ def rfftfreq(n, d=1.0, device=None, *, dtype=None):
 
 def _frequency_count(n):
     """NumPy's `n` of fftfreq and rfftfreq: an integer, else a ValueError."""
-    if not isinstance(n, _numbers.Integral):
-        raise ValueError("n should be an integer")
-    return _operator.index(n)
+    try:
+        return _operator.index(n)  # an int, or an integer scalar Tensor or array
+    except TypeError:
+        raise ValueError("n should be an integer") from None
 
 
 def _shift(x, axes, inverse):
