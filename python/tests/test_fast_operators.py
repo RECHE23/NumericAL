@@ -64,7 +64,7 @@ class FastOperators(unittest.TestCase):
     def test_a_complex_power_is_numpys(self):
         # A complex power that is not by products (an exponent not a small integer) is the C library's cpow, which
         # NumPy calls: its bits under macOS (where libc++'s std::pow strayed from it for half the bases) and glibc;
-        # MSVC's std::pow is its own, within a few units in the last place.
+        # MSVC's std::pow is its own, within 100 epsilons times the exponent's size.
         rng = np.random.default_rng(9)
         for dtype in (np.complex128, np.complex64):
             bases = (rng.standard_normal(4000) + 1j * rng.standard_normal(4000)).astype(dtype)
@@ -74,8 +74,9 @@ class FastOperators(unittest.TestCase):
                     with np.errstate(all="ignore"):
                         want = bases ** np.asarray(exponent, dtype)
                     got = np.asarray(t ** numerical.asarray(np.asarray(exponent, dtype)))
-                    if sys.platform == "win32":
-                        np.testing.assert_allclose(got, want, rtol=1e-5 if dtype == np.complex64 else 1e-14)
+                    if sys.platform == "win32":  # an error relative to the exponent's size: 1.1e-13 to the 150th
+                        epsilon = np.finfo(np.complex64 if dtype == np.complex64 else np.complex128).eps
+                        np.testing.assert_allclose(got, want, rtol=100 * epsilon * max(1.0, abs(exponent)))
                     else:
                         np.testing.assert_array_equal(got, want)
 
