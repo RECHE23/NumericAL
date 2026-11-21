@@ -1794,7 +1794,7 @@ namespace {
     for (const bool fused : {false, true}) {
       const C square {numpy_multiply(a, a, fused)};
       ok = ok && numpy_power(a, C {R {0}, R {0}}, fused) == C {R {1}, R {0}};
-      ok = ok && numpy_power(a, C {R {0}, R {1}}, fused).imag() != R {0}; // an exponent of i, by std::pow
+      ok = ok && numpy_power(a, C {R {0}, R {1}}, fused).imag() != R {0}; // an exponent of i, by the C library's cpow
       ok = ok && numpy_power(C {R {0}, R {2}}, C {R {2}, R {0}}, fused) == numpy_multiply(C {R {0}, R {2}}, C {R {0}, R {2}}, fused);
       ok = ok && numpy_power(C {R {0}, R {0}}, C {R {2}, R {1}}, fused) == C {R {0}, R {0}};
       const C nan_power {numpy_power(C {R {0}, R {-0.0}}, C {R {-1}, R {0}}, fused)};
@@ -1807,9 +1807,9 @@ namespace {
       ok = ok && numpy_power(a, C {R {5}, R {0}}, fused) == fifth;
       ok = ok && numpy_power(a, C {R {-1}, R {0}}, fused) == numpy_divide(C {R {1}, R {0}}, numpy_multiply(C {R {1}, R {0}}, a, fused), fused);
       ok = ok && numpy_power(a, C {R {-2}, R {0}}, fused) == numpy_divide(C {R {1}, R {0}}, numpy_multiply(C {R {1}, R {0}}, square, fused), fused);
-      // any other exponent by std::pow: a fraction, one of 100 or more, an imaginary part
-      // (read back through volatile parts: GCC folds std::pow of constants exactly, where a call rounds as the C
-      // library's cpow does)
+      // any other exponent by the C library's cpow (library_power: std::pow but under Apple, whose libc++ computes
+      // its own): a fraction, one of 100 or more, an imaginary part (read back through volatile parts: GCC folds
+      // std::pow of constants exactly, where a call rounds as the C library's cpow does)
       for (const C& exponent : {C {R {0.5}, R {0}}, C {R {100}, R {0}}, C {R {-100}, R {0}}, C {R {2}, R {1}}, C {nan, R {0}}}) {
         volatile R real_part      {exponent.real()};
         volatile R imaginary_part {exponent.imag()};
@@ -1817,7 +1817,7 @@ namespace {
         volatile R base_imaginary {a.imag()};
         const C    base           {static_cast<R>(base_real), static_cast<R>(base_imaginary)};
         const C    b              {static_cast<R>(real_part), static_cast<R>(imaginary_part)};
-        const C    want           {std::pow(base, b)};
+        const C    want           {numerical::detail::library_power(base, b)};
         const C    got            {numpy_power(base, b, fused)};
         ok = ok && ((got == want) || (std::isnan(got.real()) && std::isnan(want.real())));
       }

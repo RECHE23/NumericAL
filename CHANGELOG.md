@@ -29,6 +29,10 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ### Fixed
 
+- **A complex power on macOS is NumPy's**: an exponent other than a small integer took libc++'s `std::pow`, which
+  computes `exp(b log a)` itself and strayed from the C library's `cpow`, NumPy's, for about half the bases (to
+  1.8e-15 relative); it calls `cpow` and `cpowf` there now. Under glibc it was the same already.
+
 - **C++: a view that repeats elements is read as it is**: a slice with a step of 0 (a row or a column repeated) that
   starts at the first element and counts as many elements as its buffer was taken for a transpose of the whole, so
   `+` and the other operations on two such views, `einsum` (`ij->j`, `ij->i`, `ij->ji`), the sums along an axis, the

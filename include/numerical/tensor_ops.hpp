@@ -175,11 +175,59 @@ namespace numerical {
       return C {ratio / d, R {-1} / d};
     }
 
+#if defined(__APPLE__)
+    //! \brief A C `double _Complex` as the Apple ABIs pass it (arm64's and x86-64's): two doubles, as this struct.
+    struct c_complex_double {
+      double re; //!< The real part.
+      double im; //!< The imaginary part.
+    };
+
+    //! \brief A C `float _Complex` likewise.
+    struct c_complex_float {
+      float re; //!< The real part.
+      float im; //!< The imaginary part.
+    };
+
+    // The C library's `cpow` and `cpowf` under names of their own (C++ has no `_Complex`), their symbols bound by label.
+    extern "C" c_complex_double c_library_cpow(c_complex_double base,
+                                               c_complex_double exponent) __asm__ ("_cpow");
+    extern "C" c_complex_float  c_library_cpowf(c_complex_float base,
+                                                c_complex_float exponent) __asm__ ("_cpowf");
+
+    //! \brief `a ** b` by the C library's `cpow`, which NumPy calls, where libc++'s `std::pow` computes `exp(b log a)`
+    //!        itself and strays from it by a few units in the last place (half of random bases, to 1.8e-15).
+    [[nodiscard]] inline std::complex<double> library_power(const std::complex<double>& a,
+                                                            const std::complex<double>& b) noexcept
+    {
+      const c_complex_double z {c_library_cpow({a.real(), a.imag()}, {b.real(), b.imag()})};
+      return {z.re, z.im};
+    }
+
+    //! \brief \ref library_power of `float`s, by `cpowf`.
+    [[nodiscard]] inline std::complex<float> library_power(const std::complex<float>& a,
+                                                           const std::complex<float>& b) noexcept
+    {
+      const c_complex_float z {c_library_cpowf({a.real(), a.imag()}, {b.real(), b.imag()})};
+      return {z.re, z.im};
+    }
+
+#else
+    //! \brief `a ** b` by `std::pow`: libstdc++'s calls the C library's `cpow`, which NumPy calls (the same bits under
+    //!        glibc); MSVC's is its own.
+    template <split_complex C>
+    [[nodiscard]] C library_power(const C& a,
+                                  const C& b)
+    {
+      return std::pow(a, b);
+    }
+
+#endif
+
     /*!
      * \brief NumPy's complex power `a ** b` (npymath's `npy_cpow`): 1 for a zero exponent, 0 or NaN for a zero base;
      *        an integer exponent below 100 in magnitude by products (\ref numpy_multiply, from 1 past the cubes) and,
-     *        when negative, the quotient of 1 by them (\ref numpy_divide), each fused where \p fused; any other by
-     *        `std::pow`, where NumPy calls the C library's `cpow`.
+     *        when negative, the quotient of 1 by them (\ref numpy_divide), each fused where \p fused; any other by the
+     *        C library's `cpow`, as NumPy (\ref library_power).
      */
     template <split_complex C>
     [[nodiscard]] C numpy_power(const C& a,
@@ -197,7 +245,7 @@ namespace numerical {
         return C {std::numeric_limits<R>::quiet_NaN(), std::numeric_limits<R>::quiet_NaN()};
       }
       if (b.imag() != R {0} || !(b.real() > R {-100} && b.real() < R {100}) || std::trunc(b.real()) != b.real()) {
-        return std::pow(a, b);
+        return library_power(a, b);
       }
       const auto n {static_cast<int>(b.real())};
       if (n == 1) {

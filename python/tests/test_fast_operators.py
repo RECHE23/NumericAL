@@ -3,6 +3,7 @@ or a float or complex Tensor and a weak Python number, computed in C as the prom
 answers, and the promoting path's for every operand the short path leaves to it."""
 
 import operator
+import sys
 import unittest
 
 import numerical
@@ -40,8 +41,8 @@ class FastOperators(unittest.TestCase):
                             continue
                         with self.subTest(dtype=np.dtype(dtype).name, number=number, op=name):
                             if name == "**" and np.dtype(dtype).kind == "c":
-                                # a complex power's own answer, the number as a rank-0 Tensor of the dtype: npy_cpow's
-                                # emulation is a few ulps off NumPy's for some exponents, the short path or not
+                                # the power of the number as a rank-0 Tensor of the dtype, which
+                                # test_a_complex_power_is_numpys holds to NumPy's
                                 as_tensor = numerical.asarray(number, t.dtype)
                                 if number in (2, -1, 0.5):  # NumPy's square, reciprocal and root, not its power
                                     self.assert_like_numpy(t ** number, a ** number)
@@ -57,6 +58,24 @@ class FastOperators(unittest.TestCase):
                         with self.subTest(dtype=np.dtype(dtype).name, number=number, op=name):
                             self.assert_like_numpy(f(t, number), f(a, number))
                             self.assert_like_numpy(f(number, t), f(number, a))
+
+    def test_a_complex_power_is_numpys(self):
+        # A complex power that is not by products (an exponent not a small integer) is the C library's cpow, which
+        # NumPy calls: its bits under macOS (where libc++'s std::pow strayed from it for half the bases) and glibc;
+        # MSVC's std::pow is its own, within a few units in the last place.
+        rng = np.random.default_rng(9)
+        for dtype in (np.complex128, np.complex64):
+            bases = (rng.standard_normal(4000) + 1j * rng.standard_normal(4000)).astype(dtype)
+            t = numerical.asarray(bases)
+            for exponent in (2.5, 0.1, -1.7, 1j, 0.3 + 0.2j, 150.0):
+                with self.subTest(dtype=np.dtype(dtype).name, exponent=exponent):
+                    with np.errstate(all="ignore"):
+                        want = bases ** np.asarray(exponent, dtype)
+                    got = np.asarray(t ** numerical.asarray(np.asarray(exponent, dtype)))
+                    if sys.platform == "win32":
+                        np.testing.assert_allclose(got, want, rtol=1e-5 if dtype == np.complex64 else 1e-14)
+                    else:
+                        np.testing.assert_array_equal(got, want)
 
     def test_two_tensors_of_one_dtype_broadcast_as_numpy(self):
         rng = np.random.default_rng(8)
