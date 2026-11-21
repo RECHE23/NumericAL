@@ -209,6 +209,9 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
           "_borrowed_einsum(spec, x) -> Tensor or NotImplemented\nOne operand summed over a run of its axes, read where it lies.");
     m.raw("_borrowed_unary", module_borrowed_unary, METH_VARARGS,
           "_borrowed_unary(name, x) -> Tensor or NotImplemented\nAn element-wise function of every element of a NumPy array read where it lies.");
+    m.raw("_borrowed_binary", module_borrowed_binary, METH_VARARGS,
+          "_borrowed_binary(op, x, y) -> Tensor or NotImplemented\nx op y (+ - * /) of Tensors, NumPy arrays read where they lie "
+          "and a weak Python number.");
     m.raw("_borrowed_reduce", module_borrowed_reduce, METH_VARARGS,
           "_borrowed_reduce(op, x) -> number or NotImplemented\nsum, mean, max or min of every element of a NumPy array read where it lies.");
     m.raw("_borrowed_norm", module_borrowed_norm, METH_O,

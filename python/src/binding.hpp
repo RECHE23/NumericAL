@@ -3651,6 +3651,10 @@ PyObject* module_borrowed_reduce(PyObject* /*self*/, PyObject* args); // in elem
 // array was copied into a Tensor first: 10^6 doubles' exp 2.63 ms, 1.06 from a Tensor.
 PyObject* module_borrowed_unary(PyObject* /*self*/, PyObject* args); // in elementwise.cpp
 
+// _borrowed_binary(op, x, y) -> Tensor or NotImplemented: x op y for op one of + - * /, of Tensors and NumPy arrays read
+// where they lie (borrow_operand) and a weak Python float or int, of one float or complex dtype, the bits of _binary.
+PyObject* module_borrowed_binary(PyObject* /*self*/, PyObject* args); // in elementwise.cpp
+
 // A vector, or a matrix of one row, times a column-major matrix of two columns or more, both read where they lie: the
 // vector times the matrix as canonical_product sums it, a column of the matrix at a time (vector_times_transposed), so
 // the bits of the product of its C-ordered copy, which was copied first. None for any other pair.

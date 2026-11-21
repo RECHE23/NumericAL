@@ -1321,21 +1321,29 @@ namespace numerical {
     }
 
     /*!
-     * \brief Whether NumPy multiplies \p a by \p b in its scalar loop rather than its vector one: when the result is
+     * \brief Whether NumPy multiplies an operand of shape \p a_shape by one of \p b_shape in its scalar loop rather than
+     *        its vector one: when the result is
      *        one element and an operand of rank above 0 is broadcast to a higher rank, NumPy's iterator hands its loop
      *        an output step of 0, which the vector loop refuses.
      */
+    [[nodiscard]] inline bool numpy_loop_is_scalar(const std::vector<std::size_t>& a_shape,
+                                                   const std::vector<std::size_t>& b_shape) noexcept
+    {
+      const auto        ones {[](const std::vector<std::size_t>& shape) { return std::ranges::all_of(shape, [](std::size_t e) { return e == 1; }); }};
+      const std::size_t rank {std::max(a_shape.size(), b_shape.size())};
+      const auto        broadcast {[rank](const std::vector<std::size_t>& shape) { return !shape.empty() && shape.size() != rank; }};
+      if (!ones(a_shape) || !ones(b_shape)) {
+        return false;
+      }
+      return broadcast(a_shape) || broadcast(b_shape);
+    }
+
+    //! \brief \ref numpy_loop_is_scalar of the shapes of \p a and \p b.
     template <typename T>
     [[nodiscard]] bool numpy_loop_is_scalar(const tensor<T>& a,
                                             const tensor<T>& b) noexcept
     {
-      const auto        ones {[](const tensor<T>& t) { return std::ranges::all_of(t.shape(), [](std::size_t e) { return e == 1; }); }};
-      const std::size_t rank {std::max(a.rank(), b.rank())};
-      const auto        broadcast {[rank](const tensor<T>& t) { return t.rank() != 0 && t.rank() != rank; }};
-      if (!ones(a) || !ones(b)) {
-        return false;
-      }
-      return broadcast(a) || broadcast(b);
+      return numpy_loop_is_scalar(a.shape(), b.shape());
     }
 
     /*!
@@ -2056,6 +2064,33 @@ namespace numerical {
                    });
       return tensor<R> {shape, std::move(out)};
     }
+
+    /*!
+     * \brief `op(a, b)` element by element of the row-major \p a (\p a_shape) and \p b (\p b_shape), broadcast against
+     *        each other, in `op`'s result type: \ref broadcast_apply's paths for two contiguous tensors, so their
+     *        bits, for elements no tensor holds (the binding's NumPy arrays). One element against as many axes or
+     *        more is a number.
+     * \throws dimension_error If the shapes do not broadcast.
+     */
+    template <typename T,
+              typename Op>
+    [[nodiscard]] auto broadcast_rows(const T*                        a,
+                                      const std::vector<std::size_t>& a_shape,
+                                      const T*                        b,
+                                      const std::vector<std::size_t>& b_shape,
+                                      const Op&                       op)
+    {
+      if (a_shape == b_shape) {
+        return pairs_into(a, b, a_shape, op);
+      }
+      if (element_count(b_shape.begin(), b_shape.end()) == 1 && b_shape.size() <= a_shape.size()) {
+        return parallel_map(a, a_shape, [&op, y = *b](const T& x) { return op(x, y); });
+      }
+      if (element_count(a_shape.begin(), a_shape.end()) == 1 && a_shape.size() <= b_shape.size()) {
+        return parallel_map(b, b_shape, [&op, x = *a](const T& y) { return op(x, y); });
+      }
+      return broadcast_into(a, a_shape, b, b_shape, op);
+    }
   } // namespace detail
 
   /*!
@@ -2071,10 +2106,10 @@ namespace numerical {
                                      const tensor<T>& b,
                                      const Op&        op)
   {
-    if (a.contiguous() && b.contiguous() && a.shape() == b.shape()) { // the common case, straight through
-      return detail::pairs_into(a.origin(), b.origin(), a.shape(), op);
+    if (a.contiguous() && b.contiguous()) {      // the common case, straight through
+      return detail::broadcast_rows(a.origin(), a.shape(), b.origin(), b.shape(), op);
     }
-    if (b.size() == 1 && b.rank() <= a.rank()) {                      // the result of a's shape
+    if (b.size() == 1 && b.rank() <= a.rank()) { // the result of a's shape
       return detail::parallel_map(a, [&op, y = *b.origin()](const T& x) { return op(x, y); });
     }
     if (a.size() == 1 && a.rank() <= b.rank()) {

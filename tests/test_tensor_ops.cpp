@@ -892,6 +892,12 @@ TEST(arithmetic_broadcasts_as_numpy)
   EXPECT((counting({2, 3}) + counting({2, 3})) == (counting({2, 3}) * scalar)); // the same-shape path
   EXPECT(-counting({2}) == (tensor<double> {{2}, {-0.0, -1.0}}));
   EXPECT_THROWS((void)(counting({2, 3}) + counting({2})), numerical::dimension_error);
+  // One element of more axes than a transpose beside it: the result takes its axes, the transpose read as it lies.
+  const tensor<double> turned {counting({2, 3}).transposed()};
+  const tensor<double> ten    {{1, 1, 1}, {10.0}};
+  const tensor<double> lifted {{1, 3, 2}, {10.0, 13.0, 11.0, 14.0, 12.0, 15.0}};
+  EXPECT((turned + ten) == lifted);
+  EXPECT((ten + turned) == lifted);
   const tensor<std::complex<double>> z {{2}, {{1.0, 1.0}, {0.0, 2.0}}};
   EXPECT((z * z) == (tensor<std::complex<double>> {{2}, {{0.0, 2.0}, {-4.0, 0.0}}}));
 }

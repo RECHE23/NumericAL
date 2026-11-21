@@ -122,6 +122,76 @@ class BorrowedOperands(unittest.TestCase):
         self.assertIs(numerical._numerical._borrowed_unary("abs", np.ones(3, np.complex128)), NotImplemented)
         self.assertIs(numerical._numerical._borrowed_unary("exp", [1.0]), NotImplemented)
 
+    def special(self, shape, dtype):
+        # An operand whose first elements are infinities, NaNs, signed zeros and the largest magnitudes, where
+        # NumPy's complex loops and std::complex part ways.
+        x = np.array(self.operand(shape, dtype))
+        flat = x.reshape(-1)
+        values = ([complex(np.inf, 1), complex(1, np.nan), complex(-np.inf, np.inf), complex(-0.0, 0.0), complex(1e38, -1e38)]
+                  if np.dtype(dtype).kind == "c" else [np.inf, np.nan, -0.0, 0.0, -1e38])
+        flat[:len(values)] = values[:flat.size]
+        return x
+
+    def test_arithmetic_reads_the_arrays_where_they_lie_and_gives_the_tensors_bits(self):
+        # + - * / with a NumPy array operand, read where it lies, beside another, a Tensor or a Python float or int of
+        # its dtype: the Tensors' result to the byte, of their dtype and shape, for each dtype, broadcast every way
+        # (rank 0 included), empty, a million elements (the threads), strided and Fortran-ordered (copied where small,
+        # through a Tensor where large), by the functions, the operators and the reflected operators.
+        functions = {"+": numerical.add, "-": numerical.subtract, "*": numerical.multiply, "/": numerical.divide}
+        reflected = {"+": "__radd__", "-": "__rsub__", "*": "__rmul__", "/": "__rtruediv__"}
+        pairs = (((7,), (7,)), ((3, 4), (4,)), ((3, 1), (1, 5)), ((1,), (6,)), ((6,), (1,)), ((), (5,)), ((2, 3), ()),
+                 ((1, 1), (3,)), ((3,), (1, 1)), ((0, 2), (2,)), ((1000, 1000), (1000, 1000)), ((1000, 1000), (1000,)))
+        for dtype in (np.float64, np.complex128, np.float32, np.complex64):
+            for left, right in pairs:
+                a, b = self.special(left, dtype), self.special(right, dtype)
+                ta, tb = numerical.asarray(a), numerical.asarray(b)
+                for op, f in functions.items():
+                    with self.subTest(dtype=np.dtype(dtype).name, left=left, right=right, op=op):
+                        want = np.asarray(f(ta, tb))
+                        for got in (f(a, b), f(ta, b), f(a, tb), {"+": ta + b, "-": ta - b, "*": ta * b, "/": ta / b}[op],
+                                    getattr(tb, reflected[op])(a)):
+                            self.assertIsInstance(got, numerical.Tensor)
+                            self.assertEqual((got.dtype, got.shape), (str(want.dtype), want.shape))
+                            self.assertEqual(np.asarray(got).tobytes(), want.tobytes())
+                        for number in (2.5, -3, 1e300, 2**60 + 1):
+                            for args, tensors in (((a, number), (ta, number)), ((number, a), (number, ta))):
+                                got, want_number = f(*args), np.asarray(f(*tensors))
+                                self.assertEqual((got.dtype, got.shape), (str(want_number.dtype), want_number.shape))
+                                self.assertEqual(np.asarray(got).tobytes(), want_number.tobytes())
+            x = self.special((6, 40), dtype)
+            for view in (x[:, ::3], x[::-1], np.asfortranarray(x), self.special((900, 300), dtype)[:, ::2]):
+                tensor = numerical.asarray(np.ascontiguousarray(view))
+                for op, f in functions.items():
+                    with self.subTest(dtype=np.dtype(dtype).name, strides=view.strides, op=op):
+                        self.assertEqual(np.asarray(f(view, view)).tobytes(), np.asarray(f(tensor, tensor)).tobytes())
+
+    def test_arithmetic_on_arrays_not_read_in_place_answers_as_the_tensors(self):
+        # Two dtypes (promoted), bools, integers, a complex or bool Python number, an int past a double, shapes that do
+        # not broadcast: the converting path's answer or error, unchanged.
+        x = self.special((5, 6), np.float64)
+        integers = np.arange(-15, 15).reshape(5, 6)
+        cases = ((x.astype(np.float32), x), (x > 0, x), (integers, x), (x, integers), (x, 2j),
+                 (x, True), (x.astype(np.float32), 10**400), (np.ones(3), np.ones(4)), (np.ones(3, np.float32), 2.5))
+        for left, right in cases:
+            for name in ("add", "subtract", "multiply", "divide"):
+                with self.subTest(left=left.dtype.name, right=type(right).__name__, function=name):
+                    f = getattr(numerical, name)
+                    as_tensor = (numerical.asarray(left), numerical.asarray(right) if isinstance(right, np.ndarray) else right)
+                    try:
+                        want = f(*as_tensor)
+                    except Exception as caught:  # noqa: BLE001 - the same error either way
+                        with self.assertRaises(type(caught)):
+                            f(left, right)
+                        continue
+                    got = f(left, right)
+                    self.assertEqual((got.dtype, got.shape), (want.dtype, want.shape))
+                    self.assertEqual(np.asarray(got).tobytes(), np.asarray(want).tobytes())
+        borrowed = numerical._numerical._borrowed_binary
+        for args in (("%", x, x), ("**", x, x), ("+", [1.0], x), ("+", 1.0, 2.0), ("+", x, "1"), ("+", x, x.astype(np.float32))):
+            self.assertIs(borrowed(*args), NotImplemented)
+        with self.assertRaises(ValueError):  # a broadcast refused as the Tensors refuse it
+            numerical.add(np.ones(3), np.ones(4))
+
     def test_a_transposed_matrix_times_a_vector_gives_its_copys_bits(self):
         # A column-major matrix (a transpose) times a vector, read where it lies: the product of its C-ordered copy,
         # byte for byte, in the four dtypes, about the kernels' partial sums, a complex row's slots and the blocks of

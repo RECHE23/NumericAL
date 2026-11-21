@@ -2570,4 +2570,121 @@ PyObject* module_borrowed_unary(PyObject* /*self*/, PyObject* args)
     }
 }
 
+namespace {
+
+// A Python float or int (not a bool) as the arithmetic operators take one beside a tensor of a float or complex dtype
+// (asarray(number, dtype)'s double), into `value`; false for anything else, or an int no double holds, no error set:
+// the converting path then raises the error.
+bool weak_number(PyObject* obj, double& value)
+{
+    if (PyFloat_CheckExact(obj) == 0 && PyLong_CheckExact(obj) == 0) {
+        return false;
+    }
+    value = PyFloat_AsDouble(obj);
+    if (PyErr_Occurred() != nullptr) {
+        PyErr_Clear();
+        return false;
+    }
+    return true;
+}
+
+// A borrowed operand's elements, or a weak number's, and their shape: the number one element of no axis.
+template <typename T>
+struct binary_operand
+{
+    const T*                        data;
+    const std::vector<std::size_t>& shape;
+};
+
+template <typename T>
+std::size_t elements_of(const binary_operand<T>& operand)
+{
+    return numerical::detail::element_count(operand.shape.begin(), operand.shape.end());
+}
+
+// `x op y` of two operands of one dtype, by the functions the Tensor operators apply (binary_on): the bits of
+// _binary of the same operands as Tensors.
+template <typename T>
+any_tensor borrowed_arithmetic(char op, const binary_operand<T>& x, const binary_operand<T>& y,
+                               const numerical::detail::numpy_loops& loops)
+{
+    namespace d = numerical::detail;
+    switch (op) {
+    case '+': return any_tensor {d::broadcast_rows(x.data, x.shape, y.data, y.shape, typename d::arithmetic<T>::plus {})};
+    case '-': return any_tensor {d::broadcast_rows(x.data, x.shape, y.data, y.shape, typename d::arithmetic<T>::minus {})};
+    case '*':
+        if constexpr (d::split_complex<T>) { // NumPy's loops (numpy_multiply's)
+            const bool fused {d::numpy_loop_is_scalar(x.shape, y.shape) ? loops.scalar_products : loops.products};
+            return any_tensor {d::broadcast_rows(x.data, x.shape, y.data, y.shape,
+                                                 [fused](const T& p, const T& q) { return d::numpy_multiply(p, q, fused); })};
+        }
+        else {
+            return any_tensor {d::broadcast_rows(x.data, x.shape, y.data, y.shape, typename d::arithmetic<T>::multiplies {})};
+        }
+    default:
+        if constexpr (d::split_complex<T>) { // NumPy's loop (numpy_divide's)
+            const bool fused {loops.quotients};
+            return any_tensor {d::broadcast_rows(x.data, x.shape, y.data, y.shape,
+                                                 [fused](const T& p, const T& q) { return d::numpy_divide(p, q, fused); })};
+        }
+        else {
+            return any_tensor {d::broadcast_rows(x.data, x.shape, y.data, y.shape, std::divides<T> {})};
+        }
+    }
+}
+
+} // namespace
+
+// _borrowed_binary(op, x, y) -> Tensor or NotImplemented: x op y for op one of + - * /, each operand a Tensor or a NumPy
+// array read where it lies (borrow_operand), or one of them a Python float or int (weak: of the other's dtype), the two
+// of one float or complex dtype; by the functions _binary applies to Tensors, so its answer to the bit and its errors.
+// NotImplemented for any other op or operand, or two dtypes, which the converting path then promotes. A NumPy array was
+// copied into a Tensor first: 10^5 doubles added, M1 Pro, 93 µs where two Tensors take 25.
+PyObject* module_borrowed_binary(PyObject* /*self*/, PyObject* args)
+{
+    const char* op = nullptr;
+    PyObject*   x  = nullptr;
+    PyObject*   y  = nullptr;
+    if (PyArg_ParseTuple(args, "sOO", &op, &x, &y) == 0) {
+        return nullptr;
+    }
+    const std::string_view name {op};
+    if (name.size() != 1 || std::string_view {"+-*/"}.find(name[0]) == std::string_view::npos) {
+        return Py_NewRef(Py_NotImplemented);
+    }
+    double           x_value {0.0};
+    double           y_value {0.0};
+    const bool       x_number {weak_number(x, x_value)};
+    const bool       y_number {!x_number && weak_number(y, y_value)};
+    borrowed_operand a;
+    borrowed_operand b;
+    if ((!x_number && !borrow_operand(x, a)) || (!y_number && !borrow_operand(y, b)) || (!x_number && !y_number && a.dtype != b.dtype)) {
+        return Py_NewRef(Py_NotImplemented);
+    }
+    const std::size_t                    dtype {x_number ? b.dtype : a.dtype};
+    const numerical::detail::numpy_loops loops {numpy_loops_beside()}; // read while the GIL is held
+    const std::vector<std::size_t>       no_axes;
+    try {
+        std::optional<any_tensor> result;
+        const auto                apply = [&]<typename T>(std::type_identity<T>) {
+            const T                 x_scalar {static_cast<T>(x_value)}; // asarray(number, dtype)'s element
+            const T                 y_scalar {static_cast<T>(y_value)};
+            const binary_operand<T> left {x_number ? &x_scalar : static_cast<const T*>(a.data), x_number ? no_axes : a.shape};
+            const binary_operand<T> right {y_number ? &y_scalar : static_cast<const T*>(b.data), y_number ? no_axes : b.shape};
+            const sb::scoped_gil_release unlocked {releases_gil(std::max(elements_of(left), elements_of(right)))};
+            result.emplace(borrowed_arithmetic(name[0], left, right, loops));
+        };
+        switch (dtype) {
+        case 0: apply(std::type_identity<double> {}); break;
+        case 1: apply(std::type_identity<std::complex<double>> {}); break;
+        case 2: apply(std::type_identity<float> {}); break;
+        default: apply(std::type_identity<std::complex<float>> {}); break;
+        }
+        return wrap(std::move(*result));
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
 } // namespace numerical_binding

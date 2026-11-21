@@ -3669,6 +3669,13 @@ def _arithmetic(op, reflected=False):
             if shortcut is not None:
                 return _native(_numerical._power_shortcut, shortcut, self)
         if kind is not Tensor and not isinstance(other, _numbers.Number):  # an array-like, read before promoting
+            if op in "+-*/" and kind is not list and kind is not tuple:  # a NumPy array of self's dtype, where it lies
+                if not _numpy_loops_measured and op in "*/":
+                    _numpy_loops()
+                borrowed = _native(_numerical._borrowed_binary, op, other, self) if reflected \
+                    else _native(_numerical._borrowed_binary, op, self, other)
+                if borrowed is not NotImplemented:
+                    return borrowed
             try:
                 other = _read_beside(other, self)
             except (TypeError, error):  # asarray cannot read it: let the other operand try
@@ -6002,6 +6009,9 @@ def square(x, /):
 
 def divide(x1, x2, /):
     """``x1 / x2`` element-wise, as ``numpy.divide`` (``numpy.true_divide``)."""
+    result = _borrowed_arithmetic("/", x1, x2)
+    if result is not NotImplemented:
+        return result
     x1, x2 = _binary_operands(x1, x2)
     return x1 / x2
 
@@ -8297,6 +8307,25 @@ for _name in ("swapaxes", "clip", "ptp", "var", "std", "dot", "prod", "cumsum", 
         setattr(Tensor, _name, (lambda function: lambda self, *args, **kwargs: function(self, *args, **kwargs))(globals()[_name]))
 del _name
 
+def _borrowed_arithmetic(op, x1, x2):
+    """``x1 op x2`` (op one of "+-*/") where an operand is an array (neither a Tensor, a number nor a list or tuple):
+    a NumPy array read where it lies beside a Tensor, another array or a Python float or int of its dtype
+    (:func:`_numerical._borrowed_binary`, the bits of the Tensor operator); NotImplemented otherwise, the operands
+    then read by :func:`_binary_operands`."""
+    if (type(x1) is Tensor and type(x2) is Tensor) or not (_array_like(x1) or _array_like(x2)):
+        return NotImplemented
+    if not _numpy_loops_measured and op in "*/":
+        _numpy_loops()
+    return _native(_numerical._borrowed_binary, op, x1, x2)
+
+
+def _array_like(x):
+    """Whether `x` is neither a Tensor, a number nor a list or tuple: an array, which :func:`asarray` would copy."""
+    kind = type(x)
+    return (kind is not Tensor and kind not in _NATIVE_NUMBERS and kind is not list and kind is not tuple
+            and not isinstance(x, _numbers.Number))
+
+
 def _binary_operands(x1, x2):
     """`x1` and `x2` as operands of an arithmetic operator: Tensors and numbers as they are (a number weak beside a
     Tensor), anything else read by :func:`_read_beside`, two numbers as tensors."""
@@ -8309,18 +8338,27 @@ def _binary_operands(x1, x2):
 
 def add(x1, x2, /):
     """``x1 + x2`` element-wise, as ``numpy.add``."""
+    result = _borrowed_arithmetic("+", x1, x2)
+    if result is not NotImplemented:
+        return result
     x1, x2 = _binary_operands(x1, x2)
     return x1 + x2
 
 
 def subtract(x1, x2, /):
     """``x1 - x2`` element-wise, as ``numpy.subtract``."""
+    result = _borrowed_arithmetic("-", x1, x2)
+    if result is not NotImplemented:
+        return result
     x1, x2 = _binary_operands(x1, x2)
     return x1 - x2
 
 
 def multiply(x1, x2, /):
     """``x1 * x2`` element-wise, as ``numpy.multiply``."""
+    result = _borrowed_arithmetic("*", x1, x2)
+    if result is not NotImplemented:
+        return result
     x1, x2 = _binary_operands(x1, x2)
     return x1 * x2
 
