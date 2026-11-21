@@ -3344,6 +3344,12 @@ struct array_struct
 // NPY_ARRAY_NOTSWAPPED: the elements are in this machine's byte order.
 constexpr int array_not_swapped {0x200};
 
+// _array_struct(t) -> PyCapsule: the __array_struct__ of a Tensor (numerical.Tensor.__array_struct__), which NumPy reads
+// before __array_interface__ and without the dict that builds on every access: its elements where they lie, read-only,
+// along its strides in bytes; the capsule holds the Tensor. An AttributeError for an empty Tensor, which has no address
+// to give (NumPy then reads its __array_interface__).
+PyObject* module_array_struct(PyObject* /*self*/, PyObject* obj); // in _numerical.cpp
+
 // The element count of `shape`, or false with an error set when it overflows a complex128 buffer.
 inline bool element_count(const std::vector<std::size_t>& shape, std::size_t& total)
 {
@@ -3654,6 +3660,10 @@ PyObject* module_borrowed_unary(PyObject* /*self*/, PyObject* args); // in eleme
 // _borrowed_binary(op, x, y) -> Tensor or NotImplemented: x op y for op one of + - * /, of Tensors and NumPy arrays read
 // where they lie (borrow_operand) and a weak Python float or int, of one float or complex dtype, the bits of _binary.
 PyObject* module_borrowed_binary(PyObject* /*self*/, PyObject* args); // in elementwise.cpp
+
+// _borrowed_where(condition, x, y) -> Tensor or NotImplemented: where of a bool Tensor or NumPy bool array and two
+// operands read where they lie (borrow_operand) or a weak Python float or int, of one float or complex dtype.
+PyObject* module_borrowed_where(PyObject* /*self*/, PyObject* args); // in elementwise.cpp
 
 // A vector, or a matrix of one row, times a column-major matrix of two columns or more, both read where they lie: the
 // vector times the matrix as canonical_product sums it, a column of the matrix at a time (vector_times_transposed), so

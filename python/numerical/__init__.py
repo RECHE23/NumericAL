@@ -3718,6 +3718,9 @@ Tensor.__rdivmod__ = lambda self, other: (other // self, other % self)
 Tensor.__abs__ = lambda self: absolute(self)
 Tensor.__neg__ = lambda self: _numerical._negate(self)
 Tensor.__pos__ = lambda self: self
+# NumPy reads __array_struct__ before __array_interface__: a capsule of the elements where they lie, read-only, without
+# the dict the interface builds on every access (np.asarray(t), what a NumPy function does first with a Tensor)
+Tensor.__array_struct__ = property(_numerical._array_struct)
 
 
 def _axis(t, axis):
@@ -4488,6 +4491,10 @@ def where(condition, x, y, /):
         numerical.Tensor([[1.0, 2.0],
                           [0.0, 0.0]], dtype=float64)
     """
+    if _array_like(condition) or _array_like(x) or _array_like(y):  # NumPy arrays read where they lie
+        chosen = _native(_numerical._borrowed_where, condition, x, y)
+        if chosen is not NotImplemented:
+            return chosen
     condition = condition if isinstance(condition, Tensor) else _read(condition)
     if condition.dtype != "bool":
         condition = asarray(condition, "bool")

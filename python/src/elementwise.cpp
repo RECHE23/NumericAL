@@ -1920,27 +1920,82 @@ PyObject* module_invert(PyObject* /*self*/, PyObject* args)
     }
 }
 
-// where(c, x, y) without broadcasting's walk, where it has none to do: each operand one element (of no more axes than
-// the others), or of the one shape the others share; those all row-major, or all a transpose of the same order, read
-// where they lie (the result put back in that order). Nothing otherwise. Each element chosen alone: the same either way.
+// Whether a condition's element holds: a bool Tensor's, or a NumPy bool array's byte (nonzero, as asarray reads it).
+inline bool holds_at(boolean b)
+{
+    return b.value;
+}
+
+inline bool holds_at(unsigned char b)
+{
+    return b != 0;
+}
+
+// The one shape where(c, x, y) takes without broadcasting's walk, of operands of the shapes `shapes`: each one element
+// of no more axes than it, or of that shape. Null where there is none, or every operand is one element.
+inline const std::vector<std::size_t>* alike_shape(const std::array<const std::vector<std::size_t>*, 3>& shapes)
+{
+    const auto elements {[](const std::vector<std::size_t>& each) { return numerical::detail::element_count(each.begin(), each.end()); }};
+    const auto found {std::ranges::find_if(shapes, [&](const std::vector<std::size_t>* each) { return elements(*each) != 1; })};
+    if (found == shapes.end()) {
+        return nullptr;
+    }
+    const std::vector<std::size_t>& shape {**found};
+    const bool alike {std::ranges::all_of(shapes, [&](const std::vector<std::size_t>* each) {
+        return *each == shape || (elements(*each) == 1 && each->size() <= shape.size());
+    })};
+    return alike ? &shape : nullptr;
+}
+
+// `holds ? x : y` by a mask of the bits, with no branch to mispredict on a condition of no pattern: a real's (and a
+// complex's parts) by masked_select, which vectorises; another element as it is.
+template <std::floating_point T>
+T chosen_one(bool holds, T x, T y)
+{
+    return numerical::detail::masked_select(holds, x, y);
+}
+
+template <numerical::detail::split_complex C>
+C chosen_one(bool holds, const C& x, const C& y)
+{
+    return {numerical::detail::masked_select(holds, x.real(), y.real()), numerical::detail::masked_select(holds, x.imag(), y.imag())};
+}
+
+template <typename T>
+    requires(!std::floating_point<T> && !numerical::detail::split_complex<T>)
+T chosen_one(bool holds, const T& x, const T& y)
+{
+    return holds ? x : y;
+}
+
+// `holds[i · at_c] ? u[i · at_x] : v[i · at_y]` for each of `count` elements, by chunks among the threads: an operand
+// of one element read at a step of 0.
+template <typename T, typename C>
+numerical::buffer<T> chosen_in_order(const C* holds, std::size_t at_c, const T* u, std::size_t at_x, const T* v, std::size_t at_y,
+                                     std::size_t count)
+{
+    numerical::buffer<T>  out(count);
+    constexpr std::size_t chunk {numerical::detail::elementwise_chunk};
+    numerical::detail::parallel_for((count + chunk - 1) / chunk, chunk, [&](std::size_t k) {
+        const std::size_t last {std::min(count, (k + 1) * chunk)};
+        for (std::size_t i {k * chunk}; i < last; ++i) {
+            out[i] = chosen_one(holds_at(holds[i * at_c]), u[i * at_x], v[i * at_y]);
+        }
+    });
+    return out;
+}
+
+// where(c, x, y) without broadcasting's walk, where it has none to do (alike_shape); those all row-major, or all a
+// transpose of the same order, read where they lie (the result put back in that order). Nothing otherwise. Each
+// element chosen alone: the same either way.
 template <typename T>
 std::optional<numerical::tensor<T>> where_alike(const bool_tensor& c, const numerical::tensor<T>& x, const numerical::tensor<T>& y)
 {
-    const std::vector<std::size_t>* shape {nullptr};
-    for (const std::vector<std::size_t>* each : {&c.shape(), &x.shape(), &y.shape()}) {
-        if (numerical::detail::element_count(each->begin(), each->end()) != 1) {
-            shape = each;
-            break;
-        }
-    }
+    const std::vector<std::size_t>* shape {alike_shape({&c.shape(), &x.shape(), &y.shape()})};
     if (shape == nullptr) {
         return std::nullopt;
     }
     const auto single {[shape](const auto& t) { return t.size() == 1 && t.rank() <= shape->size(); }};
-    const auto alike {[&](const auto& t) { return single(t) || t.shape() == *shape; }};
-    if (!alike(c) || !alike(x) || !alike(y)) {
-        return std::nullopt;
-    }
     // Each operand's elements and its step through them: 0 for one element.
     const boolean*                   holds {c.origin()};
     const T*                         u {x.origin()};
@@ -1966,19 +2021,8 @@ std::optional<numerical::tensor<T>> where_alike(const bool_tensor& c, const nume
             return std::nullopt;
         }
     }
-    const std::size_t at_c {single(c) ? 0U : 1U};
-    const std::size_t at_x {single(x) ? 0U : 1U};
-    const std::size_t at_y {single(y) ? 0U : 1U};
-    const std::size_t count {numerical::detail::element_count(lying.begin(), lying.end())};
-    numerical::buffer<T> out(count);
-    constexpr std::size_t chunk {numerical::detail::elementwise_chunk};
-    numerical::detail::parallel_for((count + chunk - 1) / chunk, chunk, [&](std::size_t k) {
-        const std::size_t last {std::min(count, (k + 1) * chunk)};
-        for (std::size_t i {k * chunk}; i < last; ++i) {
-            out[i] = holds[i * at_c].value ? u[i * at_x] : v[i * at_y];
-        }
-    });
-    numerical::tensor<T> chosen {std::move(lying), std::move(out)};
+    const std::size_t    count {numerical::detail::element_count(lying.begin(), lying.end())};
+    numerical::tensor<T> chosen {std::move(lying), chosen_in_order(holds, single(c) ? 0U : 1U, u, single(x) ? 0U : 1U, v, single(y) ? 0U : 1U, count)};
     if (order) {
         return chosen.transposed(numerical::detail::view_axes(*order));
     }
@@ -2679,6 +2723,120 @@ PyObject* module_borrowed_binary(PyObject* /*self*/, PyObject* args)
         case 1: apply(std::type_identity<std::complex<double>> {}); break;
         case 2: apply(std::type_identity<float> {}); break;
         default: apply(std::type_identity<std::complex<float>> {}); break;
+        }
+        return wrap(std::move(*result));
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
+
+namespace {
+
+// A condition read where it lies: a bool Tensor's bytes in C order, or a C-contiguous NumPy bool array's. `owner` (a
+// new reference: the Tensor, or the capsule, which holds the array) keeps them alive.
+struct borrowed_condition
+{
+    PyObject*                owner {nullptr};
+    const unsigned char*     data {nullptr};
+    std::vector<std::size_t> shape;
+
+    borrowed_condition() = default;
+    borrowed_condition(const borrowed_condition&) = delete;
+    borrowed_condition& operator=(const borrowed_condition&) = delete;
+    ~borrowed_condition() { Py_XDECREF(owner); }
+};
+
+// Whether `obj` is a bool Tensor or a C-contiguous NumPy bool array, read into `out`; false, no error set, otherwise.
+bool borrow_condition(PyObject* obj, borrowed_condition& out)
+{
+    if (PyObject_TypeCheck(obj, reinterpret_cast<PyTypeObject*>(sb::class_type<any_tensor>())) != 0) {
+        const any_tensor* v {reinterpret_cast<sb::wrapper<any_tensor>*>(obj)->held};
+        if (v == nullptr || !is_bool(*v)) {
+            return false;
+        }
+        out.owner = Py_NewRef(obj);
+        out.data  = static_cast<const unsigned char*>(data_of(*v)); // a boolean is its byte
+        out.shape = shape_of(*v);
+        return true;
+    }
+    PyObject* capsule = PyObject_GetAttr(obj, interned_name<array_struct_name>()); // new ref
+    if (capsule == nullptr) {
+        PyErr_Clear();
+        return false;
+    }
+    const auto* view {static_cast<const array_struct*>(PyCapsule_GetPointer(capsule, nullptr))};
+    if (view == nullptr) {
+        PyErr_Clear();
+    }
+    if (view == nullptr || view->two != 2 || view->data == nullptr || view->typekind != 'b' || view->itemsize != 1
+        || (view->flags & array_c_contiguous) == 0) {
+        Py_DECREF(capsule);
+        return false;
+    }
+    out.owner = capsule;
+    out.data  = static_cast<const unsigned char*>(view->data);
+    for (int axis = 0; axis < view->nd; ++axis) {
+        out.shape.push_back(static_cast<std::size_t>(view->shape[axis]));
+    }
+    return true;
+}
+
+} // namespace
+
+// _borrowed_where(condition, x, y) -> Tensor or NotImplemented: where of a bool Tensor or C-contiguous NumPy bool array
+// and two operands, each a Tensor or a NumPy array read where it lies (borrow_operand) or one of them a Python float or
+// int (weak: of the other's dtype), of one float or complex dtype; each element chosen as _where chooses it.
+// NotImplemented for any other operand, which the converting path then reads. The arrays were copied into Tensors first:
+// 10^5 doubles, M1 Pro, 252 µs where NumPy takes 76.
+PyObject* module_borrowed_where(PyObject* /*self*/, PyObject* args)
+{
+    PyObject* c_obj = nullptr;
+    PyObject* x     = nullptr;
+    PyObject* y     = nullptr;
+    if (PyArg_ParseTuple(args, "OOO", &c_obj, &x, &y) == 0) {
+        return nullptr;
+    }
+    borrowed_condition c;
+    double             x_value {0.0};
+    double             y_value {0.0};
+    const bool         x_number {weak_number(x, x_value)};
+    const bool         y_number {!x_number && weak_number(y, y_value)};
+    borrowed_operand   a;
+    borrowed_operand   b;
+    if (!borrow_condition(c_obj, c) || (!x_number && !borrow_operand(x, a)) || (!y_number && !borrow_operand(y, b))
+        || (!x_number && !y_number && a.dtype != b.dtype)) {
+        return Py_NewRef(Py_NotImplemented);
+    }
+    const std::size_t              dtype {x_number ? b.dtype : a.dtype};
+    const std::vector<std::size_t> no_axes;
+    try {
+        std::optional<any_tensor> result;
+        const auto                choose = [&]<typename T>(std::type_identity<T>) {
+            const T                         x_scalar {static_cast<T>(x_value)}; // asarray(number, dtype)'s element
+            const T                         y_scalar {static_cast<T>(y_value)};
+            const T* const                  u {x_number ? &x_scalar : static_cast<const T*>(a.data)};
+            const T* const                  v {y_number ? &y_scalar : static_cast<const T*>(b.data)};
+            const std::vector<std::size_t>& x_shape {x_number ? no_axes : a.shape};
+            const std::vector<std::size_t>& y_shape {y_number ? no_axes : b.shape};
+            const auto elements {[](const std::vector<std::size_t>& shape) { return numerical::detail::element_count(shape.begin(), shape.end()); }};
+            const sb::scoped_gil_release unlocked {releases_gil(std::max({elements(c.shape), elements(x_shape), elements(y_shape)}))};
+            if (const std::vector<std::size_t>* shape {alike_shape({&c.shape, &x_shape, &y_shape})}) {
+                const auto step {[shape](const std::vector<std::size_t>& each) { return each == *shape ? std::size_t {1} : std::size_t {0}; }};
+                result.emplace(numerical::tensor<T> {*shape, chosen_in_order(c.data, step(c.shape), u, step(x_shape), v, step(y_shape), elements(*shape))});
+                return;
+            }
+            const std::array shapes {c.shape, x_shape, y_shape};
+            result.emplace(broadcast_elements<T>(shapes, [&](const std::array<std::size_t, 3>& at) {
+                return holds_at(c.data[at[0]]) ? u[at[1]] : v[at[2]];
+            }));
+        };
+        switch (dtype) {
+        case 0: choose(std::type_identity<double> {}); break;
+        case 1: choose(std::type_identity<std::complex<double>> {}); break;
+        case 2: choose(std::type_identity<float> {}); break;
+        default: choose(std::type_identity<std::complex<float>> {}); break;
         }
         return wrap(std::move(*result));
     }

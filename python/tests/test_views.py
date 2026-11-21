@@ -180,6 +180,43 @@ class TestViews(unittest.TestCase):
                     self.assertEqual(_bits(view), _bits(np.ascontiguousarray(want)))
                     self.assertEqual(_bits(np.from_dlpack(view)), _bits(np.ascontiguousarray(want)))
 
+    def test_numpy_reads_a_tensor_through_its_array_struct(self):
+        # np.asarray reads __array_struct__ (before __array_interface__): the elements where they lie, read-only, of
+        # every dtype and rank, a transpose, a reversed slice and a rank-0 tensor alike; an empty tensor through its
+        # interface; the capsule keeps the tensor alive after it is gone.
+        import gc
+
+        rng = np.random.default_rng(4)
+        values = rng.standard_normal((5, 7))
+        for array in (values, values + 1j * values, values.astype(np.float32), (values + 2j).astype(np.complex64),
+                      values > 0, np.arange(35).reshape(5, 7), np.float64(2.5) + np.zeros(())):
+            t = numerical.asarray(array)
+            views = [(t, array, True)]
+            if array.ndim == 2:
+                views += [(t.T, array.T, True), (t[::-1, 1:6:2], array[::-1, 1:6:2], False)]  # a small slice a copy
+            for view, want, shared in views:
+                with self.subTest(dtype=t.dtype, shape=view.shape):
+                    got = np.asarray(view)
+                    self.assertEqual((got.dtype, got.shape), (np.dtype(view.dtype), want.shape))
+                    self.assertEqual(np.shares_memory(got, np.asarray(t)), shared)
+                    self.assertFalse(got.flags.writeable)
+                    self.assertIn(view, got.base if isinstance(got.base, tuple) else (got.base,))  # it holds the tensor
+                    np.testing.assert_array_equal(got, want)
+        empty = np.asarray(numerical.zeros((0, 3)))
+        self.assertEqual(empty.shape, (0, 3))
+        with self.assertRaises(AttributeError):
+            numerical.zeros((0, 3)).__array_struct__
+
+        class Holder:
+            pass
+
+        holder = Holder()
+        holder.__array_struct__ = numerical.asarray(values * 3).__array_struct__  # the tensor's only reference
+        gc.collect()
+        np.testing.assert_array_equal(np.asarray(holder), values * 3)
+        with self.assertRaises(TypeError):
+            numerical._numerical._array_struct(values)
+
     def test_numpy_reads_a_view_where_it_lies(self):
         # np.asarray and np.from_dlpack read a transpose in the Tensor's own buffer, read-only, along its strides; the
         # array keeps the elements alive after the view and the tensor are gone; a copy asked for is row-major.

@@ -165,6 +165,58 @@ class BorrowedOperands(unittest.TestCase):
                     with self.subTest(dtype=np.dtype(dtype).name, strides=view.strides, op=op):
                         self.assertEqual(np.asarray(f(view, view)).tobytes(), np.asarray(f(tensor, tensor)).tobytes())
 
+    def test_where_reads_the_arrays_where_they_lie_and_chooses_as_the_tensors(self):
+        # where with a NumPy bool condition and NumPy array operands, read where they lie, beside Tensors or a Python
+        # float or int of their dtype: the Tensors' result to the byte, for each dtype, broadcast every way (rank 0
+        # included), empty, a million elements (the threads), strided and Fortran-ordered operands (copied where small,
+        # through a Tensor where large) and conditions (through a Tensor), and a condition byte other than 0 or 1.
+        triples = (((7,), (7,), (7,)), ((3, 4), (4,), (3, 1)), ((), (5,), (5,)), ((2, 3), (), ()), ((1, 1), (3,), (1,)),
+                   ((4,), (1, 4), ()), ((0, 2), (2,), (2,)), ((1000, 1000), (1000, 1000), (1000,)), ((1,), (1,), (1,)))
+        for dtype in (np.float64, np.complex128, np.float32, np.complex64):
+            for shapes in triples:
+                c = self.rng.standard_normal(shapes[0]) > 0
+                x, y = self.special(shapes[1], dtype), self.special(shapes[2], dtype)
+                tc, tx, ty = numerical.asarray(c), numerical.asarray(x), numerical.asarray(y)
+                with self.subTest(dtype=np.dtype(dtype).name, shapes=shapes):
+                    want = np.asarray(numerical.where(tc, tx, ty))
+                    for args in ((c, x, y), (tc, x, y), (c, tx, ty), (c, x, ty), (tc, tx, y)):
+                        got = numerical.where(*args)
+                        self.assertIsInstance(got, numerical.Tensor)
+                        self.assertEqual((got.dtype, got.shape), (str(want.dtype), want.shape))
+                        self.assertEqual(np.asarray(got).tobytes(), want.tobytes())
+                    for number in (2.5, -3, 2**60 + 1):
+                        for args, tensors in (((c, x, number), (tc, tx, number)), ((c, number, y), (tc, number, ty))):
+                            got, want_number = numerical.where(*args), np.asarray(numerical.where(*tensors))
+                            self.assertEqual((got.dtype, got.shape), (str(want_number.dtype), want_number.shape))
+                            self.assertEqual(np.asarray(got).tobytes(), want_number.tobytes())
+            x = self.special((6, 40), dtype)
+            c = self.rng.standard_normal((6, 40)) > 0
+            for view, mask in ((x[:, ::3], c[:, ::3]), (x[::-1], c[::-1]), (np.asfortranarray(x), np.asfortranarray(c)),
+                               (self.special((900, 300), dtype)[:, ::2], self.rng.standard_normal((900, 150)) > 0)):
+                tensor, held = numerical.asarray(np.ascontiguousarray(view)), numerical.asarray(np.ascontiguousarray(mask))
+                with self.subTest(dtype=np.dtype(dtype).name, strides=view.strides):
+                    want = np.asarray(numerical.where(held, tensor, 0.0)).tobytes()
+                    self.assertEqual(np.asarray(numerical.where(mask, view, 0.0)).tobytes(), want)
+                    self.assertEqual(np.asarray(numerical.where(np.ascontiguousarray(mask), view, 0.0)).tobytes(), want)
+        bytes_ = np.array([0, 1, 2, 255], np.uint8).view(np.bool_)  # nonzero holds, as asarray reads a bool array
+        self.assert_same(numerical.where(bytes_, np.ones(4), np.zeros(4)), numerical.asarray([0.0, 1.0, 1.0, 1.0]))
+        # Not read in place: a condition of another dtype (true where nonzero), two dtypes (promoted), integers, bools
+        # and two numbers, through the converting path; shapes that do not broadcast refused alike.
+        x = self.special((5, 6), np.float64)
+        for args in ((x, x, x), (x > 0, x.astype(np.float32), x), (x > 0, np.arange(30).reshape(5, 6), x), (x > 0, x > 1, x),
+                     (x > 0, 1.0, 2.0), ([True, False], np.ones(2), np.zeros(2))):
+            with self.subTest(args=[getattr(a, "dtype", type(a).__name__) for a in args]):
+                as_tensors = [numerical.asarray(a) if isinstance(a, np.ndarray) else a for a in args]
+                got, want = numerical.where(*args), numerical.where(*as_tensors)
+                self.assertEqual((got.dtype, got.shape), (want.dtype, want.shape))
+                self.assertEqual(np.asarray(got).tobytes(), np.asarray(want).tobytes())
+        self.assertIs(numerical._numerical._borrowed_where(x, x, x), NotImplemented)
+        self.assertIs(numerical._numerical._borrowed_where(x > 0, 1.0, 2.0), NotImplemented)
+        self.assertIs(numerical._numerical._borrowed_where(x > 0, x, x.astype(np.float32)), NotImplemented)
+        self.assertIs(numerical._numerical._borrowed_where(numerical.asarray(x), x, x), NotImplemented)
+        with self.assertRaises(ValueError):
+            numerical.where(np.ones(3, bool), np.ones(4), 0.0)
+
     def test_arithmetic_on_arrays_not_read_in_place_answers_as_the_tensors(self):
         # Two dtypes (promoted), bools, integers, a complex or bool Python number, an int past a double, shapes that do
         # not broadcast: the converting path's answer or error, unchanged.

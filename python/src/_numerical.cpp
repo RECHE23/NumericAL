@@ -9,6 +9,71 @@
 #error "a free-threaded build needs SciForge 2026.10.7 or later (sciforge-build>=2026.10.7)"
 #endif
 
+namespace numerical_binding {
+
+namespace {
+
+// What a Tensor's __array_struct__ capsule points at: the struct, and the shape and byte strides it points into.
+struct exported_array
+{
+    array_struct             view {};
+    std::vector<Py_intptr_t> extents; // the shape, then the strides
+};
+
+void exported_array_free(PyObject* capsule)
+{
+    delete static_cast<exported_array*>(PyCapsule_GetPointer(capsule, nullptr));
+    Py_XDECREF(static_cast<PyObject*>(PyCapsule_GetContext(capsule)));
+}
+
+} // namespace
+
+PyObject* module_array_struct(PyObject* /*self*/, PyObject* obj)
+{
+    if (PyObject_TypeCheck(obj, reinterpret_cast<PyTypeObject*>(sb::class_type<any_tensor>())) == 0) {
+        PyErr_SetString(PyExc_TypeError, "_array_struct: a Tensor");
+        return nullptr;
+    }
+    const any_tensor* v {reinterpret_cast<sb::wrapper<any_tensor>*>(obj)->held};
+    if (v == nullptr || count_of(*v) == 0) {
+        PyErr_SetString(PyExc_AttributeError, "__array_struct__: an empty Tensor has no elements to point at");
+        return nullptr;
+    }
+    auto       out {std::make_unique<exported_array>()};
+    const auto fill = [&](const auto& t) {
+        const std::size_t rank {t.rank()};
+        const auto        size {static_cast<Py_intptr_t>(sizeof(*t.origin()))};
+        out->extents.resize(2 * rank);
+        for (std::size_t axis = 0; axis < rank; ++axis) {
+            out->extents[axis]        = static_cast<Py_intptr_t>(t.shape()[axis]);
+            out->extents[rank + axis] = static_cast<Py_intptr_t>(t.strides()[axis]) * size;
+        }
+        out->view.nd       = static_cast<int>(rank);
+        out->view.itemsize = static_cast<int>(size);
+        out->view.data     = const_cast<void*>(static_cast<const void*>(t.origin())); // NOLINT(cppcoreguidelines-pro-type-const-cast): read-only, no WRITEABLE flag
+        out->view.flags    = array_aligned | array_not_swapped | (t.contiguous() ? array_c_contiguous : 0);
+    };
+    std::visit(fill, *v);
+    const std::string typestr {typestr_of(*v)}; // a byte order, then the kind and the size
+    out->view.two      = 2;
+    out->view.typekind = typestr[1];
+    out->view.shape    = out->extents.data();
+    out->view.strides  = out->extents.data() + out->view.nd;
+    PyObject* capsule {PyCapsule_New(out.get(), nullptr, exported_array_free)};
+    if (capsule == nullptr) {
+        return nullptr;
+    }
+    out.release(); // NOLINT(bugprone-unused-return-value): the capsule's destructor owns it now
+    if (PyCapsule_SetContext(capsule, Py_NewRef(obj)) != 0) {
+        Py_DECREF(obj);
+        Py_DECREF(capsule);
+        return nullptr;
+    }
+    return capsule;
+}
+
+} // namespace numerical_binding
+
 using namespace numerical_binding; // NOLINT(google-build-using-namespace): the registration names every function
 
 SCIFORGE_MODULE(_numerical, "numerical.error", m)
@@ -212,6 +277,10 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     m.raw("_borrowed_binary", module_borrowed_binary, METH_VARARGS,
           "_borrowed_binary(op, x, y) -> Tensor or NotImplemented\nx op y (+ - * /) of Tensors, NumPy arrays read where they lie "
           "and a weak Python number.");
+    m.raw("_array_struct", module_array_struct, METH_O,
+          "_array_struct(t) -> PyCapsule\nThe __array_struct__ of a Tensor: its elements where they lie, read-only.");
+    m.raw("_borrowed_where", module_borrowed_where, METH_VARARGS,
+          "_borrowed_where(condition, x, y) -> Tensor or NotImplemented\nwhere of a bool condition and operands read where they lie.");
     m.raw("_borrowed_reduce", module_borrowed_reduce, METH_VARARGS,
           "_borrowed_reduce(op, x) -> number or NotImplemented\nsum, mean, max or min of every element of a NumPy array read where it lies.");
     m.raw("_borrowed_norm", module_borrowed_norm, METH_O,

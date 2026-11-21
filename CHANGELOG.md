@@ -14,6 +14,13 @@ A change that can break code is listed under **Breaking** and held for a month's
   they copied it into a Tensor first (`add`, `subtract`, `multiply`, `divide` and the Tensor operators): for float32,
   float64, complex64 and complex128 operands of one dtype, broadcast or not, an M1 Pro 10⁵ doubles added 93 → 25 µs,
   16 of them 2.0 → 0.7 µs, the time of two Tensors. The same bits, and the same errors.
+- **`where` reads NumPy arrays where they lie**, a bool condition and operands of one float or complex dtype (or a
+  Python float or int beside one), where it copied each into a Tensor first, and **chooses each element by a mask of
+  its bits**, where a branch mispredicted half the time on a condition of no pattern: an M1 Pro, 10⁵ doubles, NumPy
+  arrays 224 → 29 µs (NumPy 43), Tensors 94 → 29, 16 elements 3.6 → 0.8 µs. The same elements chosen.
+- **`np.asarray(t)` reads a Tensor through `__array_struct__`**, a capsule of its elements where they lie (read-only,
+  as before), where NumPy built the `__array_interface__` dict on every conversion, and so does every NumPy function
+  given a Tensor: 0.70 → 0.39 µs a conversion.
 
 ### Fixed
 
