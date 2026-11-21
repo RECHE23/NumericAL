@@ -40,11 +40,13 @@ class FastOperators(unittest.TestCase):
                         if np.dtype(dtype).kind == "c" and name in ("//", "%"):
                             continue
                         with self.subTest(dtype=np.dtype(dtype).name, number=number, op=name):
-                            if name == "**" and np.dtype(dtype).kind == "c":
-                                # the power of the number as a rank-0 Tensor of the dtype, which
-                                # test_a_complex_power_is_numpys holds to NumPy's
+                            if name == "**":
+                                # the power of the number as a rank-0 Tensor of the dtype: NumPy's own real power
+                                # differs by a unit in the last place from one processor to another (0.1 ** -3 is
+                                # 999.9999999999998 on a GitHub runner, 1000.0 on an AVX2 core, the C library's
+                                # 999.9999999999999), and test_a_complex_power_is_numpys holds the complex one
                                 as_tensor = numerical.asarray(number, t.dtype)
-                                if number in (2, -1, 0.5):  # NumPy's square, reciprocal and root, not its power
+                                if np.dtype(dtype).kind == "c" and number in (2, -1, 0.5):  # NumPy's shortcuts
                                     self.assert_like_numpy(t ** number, a ** number)
                                 else:
                                     self.assertEqual(np.asarray(t ** number).tobytes(), np.asarray(t ** as_tensor).tobytes())
