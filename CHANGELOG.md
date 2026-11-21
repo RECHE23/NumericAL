@@ -22,9 +22,15 @@ A change that can break code is listed under **Breaking** and held for a month's
   numbers.Real)` are false, and `json.dumps`, `statistics`, `decimal.Decimal` and `fractions.Fraction` refuse it; pass
   them `float(x)` or `x.item()`. A list of them reads as a Tensor (`asarray([t[0], t[1]])`, their dtypes promoted). `matrix_rank`
   of a stack is an int64 Tensor, where it was a nested list. The array API's conformance suite passed 84–86 % before.
+  An integer one is an index, as NumPy's integer scalars: a count or an `argmax` serves as a shape, reps, shifts or
+  axes (`zeros(n)`, `tile(x, n)`) and repeats a list, a tuple or a string (`[0] * n` is `[0, 0]` for 2); beside a
+  list it computes, as a NumPy scalar does (`[1, 2] + n` is a Tensor). A comparison answers a bool Tensor, which
+  `if` and `bool()` read. This break comes a month before the one announced in 2026.11.15 (a rank-0 Tensor for
+  float32, complex64 and int64 alone, in 2027.1.0), which it replaces: every dtype at once, as the array API wants.
 - **Integers as integers**: NumPy's integer arrays (int8 to int64, and the unsigned ones but uint64, read as
   float64) and Python's ints, alone or in a list, are read as int64, as NumPy reads them, where they were float64
-  (`asarray([1, 2])` was `[1.0, 2.0]`). They compute as NumPy's integers: `+ - * // % **`, the sums and products,
+  (`asarray([1, 2])` was `[1.0, 2.0]`); a bool Tensor beside a Python int computes in int64, as NumPy's
+  (`asarray([True, False]) * 3` is `[3, 0]`). They compute as NumPy's integers: `+ - * // % **`, the sums and products,
   `@`, `matmul`, `dot`, `einsum`, `tensordot`, `vecdot` and `matrix_power` in int64, wrapped modulo 2⁶⁴; `/`, `mean`,
   `var`, `std`, the elementary functions, the linear algebra, the norms and the transforms in float64, as before. A
   Python int past int64 raises OverflowError; `take_along_axis` refuses float indices, as NumPy's.
@@ -165,6 +171,10 @@ A change that can break code is listed under **Breaking** and held for a month's
   complex128), apart from the NumPy figures BENCHMARKS.md follows, and every case of every family has a time limit
   (`TIMEOUT=`, 30 s a side by default) past which it is reported and left out, where one slow case held a run for hours.
 
+- **`asarray` reads what NumPy reads**: a `range`, a buffer (`array.array`, a `memoryview`, a `bytearray`, its integers as
+  int64), an object with `__array__` (pandas, xarray, torch on the CPU) and a list of NumPy arrays, stacked as a list
+  of Tensors is; each was refused (found by an audit).
+
 ### Fixed
 
 - **A NumPy scalar first beside a Tensor gives a Tensor**: `numerical.multiply(np.float64(2), t)` (and `add`,
@@ -187,6 +197,8 @@ A change that can break code is listed under **Breaking** and held for a month's
   are a transpose's. Python's indexing takes no step of 0 (NumPy's rule) and was not reached. Found by an audit
 - **`count_nonzero` over axes out of order** (`axis=(1, 0)`) counts them all, where it raised AxisError past the first,
   and so do `nanmean`, `nanvar` and `nanstd` of an array with NaNs, which count through it. Found by an audit
+- **`nanmax` and `nanmin` of a NumPy bool array** answer bools, and the other NaN reductions NumPy's dtypes, where the
+  array was read as numbers first (int64 extremes).
 
 ## 2026.11.20 — 2026-11-20
 
@@ -348,17 +360,6 @@ A change that can break code is listed under **Breaking** and held for a month's
   from the same eigenvalues in place of a singular value decomposition; a real symmetric matrix's products real, and
   `T^t` too where its eigenvalues are positive. The same errors against 50 digits (the eigenvalues alone erred two to
   five times more). On an M1, order 200 35 → 3.7 ms real, 54 → 10.6 ms complex.
-
-### Added
-
-- **`asarray` reads what NumPy reads**: a `range`, a buffer (`array.array`, a `memoryview`, a `bytearray`, its integers as
-  int64), an object with `__array__` (pandas, xarray, torch on the CPU) and a list of NumPy arrays, stacked as a list
-  of Tensors is; each was refused (found by an audit).
-
-### Fixed
-
-- **`nanmax` and `nanmin` of a NumPy bool array** answer bools, and the other NaN reductions NumPy's dtypes, where the
-  array was read as numbers first (int64 extremes).
 
 ## 2026.11.17 — 2026-11-17
 

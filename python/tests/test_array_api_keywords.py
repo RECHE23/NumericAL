@@ -50,6 +50,35 @@ class WithoutNumPy(unittest.TestCase):
             self.assertEqual(single.tolist(), numerical.asarray(function(8, 0.5), "float32").tolist())
             self.assertEqual(function(8, 0.5).dtype, "float64")
 
+    def test_an_integer_scalar_serves_as_a_size(self):
+        # A count or an argmax is a rank-0 int64 Tensor: an index, as NumPy's integer scalars, so it serves as a
+        # shape, reps, shifts and axes, and a sequence repeats by it rather than compute with it.
+        n = numerical.count_nonzero(numerical.asarray([1, 1, 0]))
+        self.assertEqual(numerical.zeros(n).shape, (2,))
+        self.assertEqual(numerical.ones((n, n)).shape, (2, 2))
+        self.assertEqual(numerical.empty(n).shape, (2,))
+        self.assertEqual(numerical.full(n, 7).tolist(), [7, 7])
+        self.assertEqual(numerical.arange(2).reshape(n).shape, (2,))
+        x = numerical.arange(4)
+        self.assertEqual(numerical.tile(x[:2], n).tolist(), [0, 1, 0, 1])
+        self.assertEqual(numerical.roll(x, n).tolist(), [2, 3, 0, 1])
+        self.assertEqual(numerical.roll(x, 1, axis=n - 2).tolist(), [3, 0, 1, 2])
+        self.assertEqual(numerical.resize(x, n).tolist(), [0, 1])
+        self.assertEqual([int(c) for c in numerical.unravel_index(5, (n, 3))], [1, 2])
+        self.assertEqual(numerical.expand_dims(x, n - 2).shape, (1, 4))
+        self.assertEqual(numerical.repeat(x[:2], n).tolist(), [0, 0, 1, 1])
+        self.assertEqual([part.tolist() for part in numerical.split(x, n)], [[0, 1], [2, 3]])
+        self.assertEqual([part.tolist() for part in numerical.array_split(x, n)], [[0, 1], [2, 3]])
+        self.assertEqual(numerical.partition(numerical.asarray([3, 1, 2]), n - 1)[1], 2)
+        self.assertEqual(numerical.fft.fftfreq(n).tolist(), [0.0, -0.5])
+        self.assertEqual([0] * n, [0, 0])
+        self.assertEqual(n * (0,), (0, 0))
+        self.assertEqual("ab" * n, "abab")
+        self.assertEqual((x * n).tolist(), [0, 2, 4, 6])  # a Tensor beside it computes
+        self.assertEqual(([0] * numerical.asarray(2.0)).tolist(), [0.0])  # a float scalar computes, as NumPy's
+        with self.assertRaises(TypeError):
+            numerical.zeros(numerical.asarray(2.0))  # and is no size
+
     def test_asarray_copy(self):
         t = numerical.asarray([1.0, 2.0])
         self.assertIs(numerical.asarray(t, copy=False), t)  # its elements shared, never written into
