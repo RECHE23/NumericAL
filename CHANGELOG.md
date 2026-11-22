@@ -8,6 +8,8 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+## 2026.11.21 — 2026-11-22
+
 ### Changed
 
 - **Shallow products on the AMX run by rows on the cores** (depth 8 to 16, where the rows take three threads or
