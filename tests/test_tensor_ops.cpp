@@ -2602,6 +2602,64 @@ TEST(select_along_last_of_drawn_lines_as_the_stable_sort)
   EXPECT(selections_drawn_match_the_sort<float>());
 }
 
+namespace {
+  // Whether argsort of drawn lines shorter than radix_sort_least gives the indices a stable sort by sorts_before gives:
+  // few values (repeats, zeros of either sign, infinities, NaNs of either sign and payload) along either axis.
+  template <typename T>
+  bool short_argsorts_drawn_match_the_stable_sort()
+  {
+    std::uint64_t state {777};
+    const auto    draw {[&state](std::size_t bound) {
+                          state = (state * 6364136223846793005ULL) + 1442695040888963407ULL;
+                          return static_cast<std::size_t>((state >> 33U) % bound);
+                        }};
+    std::array<T, 7> values {T {-2}, T {0}, T {1}, T {3}, T {-1}, T {2}, T {5}};
+    if constexpr (std::floating_point<T>) {
+      values = {T {-2}, -T {0}, T {0}, std::numeric_limits<T>::infinity(), -std::numeric_limits<T>::infinity(),
+                std::numeric_limits<T>::quiet_NaN(), -std::numeric_limits<T>::quiet_NaN()};
+    }
+    bool every {true};
+    for (const std::size_t count : {std::size_t {1}, std::size_t {2}, std::size_t {17}, std::size_t {100}, std::size_t {255}}) {
+      for (int round {0}; round < 8; ++round) {
+        numerical::buffer<T> elements(3 * count);
+        for (T& v : elements) {
+          v = values[draw(values.size())];
+        }
+        const tensor<T> t {{3, count}, std::move(elements)};
+        for (const std::size_t axis : {std::size_t {0}, std::size_t {1}}) {
+          const tensor<std::int64_t> got    {numerical::argsort(t, axis)};
+          const std::size_t          extent {t.shape()[axis]};
+          const std::size_t          lines  {t.size() / extent};
+          for (std::size_t line {0}; line < lines; ++line) {
+            const auto                at {[axis, line, count](std::size_t k) { return axis == 1 ? (line * count) + k : (k * count) + line; }};
+            std::vector<T>            elements_of_line(extent);
+            for (std::size_t k {0}; k < extent; ++k) {
+              elements_of_line[k] = t.data()[at(k)];
+            }
+            std::vector<std::int64_t> want(extent);
+            std::iota(want.begin(), want.end(), std::int64_t {0});
+            std::stable_sort(want.begin(), want.end(), [&elements_of_line](std::int64_t a, std::int64_t b) {
+                               return numerical::detail::sorts_before(elements_of_line[static_cast<std::size_t>(a)], elements_of_line[static_cast<std::size_t>(b)]);
+                             });
+            for (std::size_t k {0}; k < extent; ++k) {
+              every = every && got.data()[at(k)] == want[k];
+            }
+          }
+        }
+      }
+    }
+    return every;
+  }
+} // namespace
+
+// argsort of lines shorter than radix_sort_least, by their keys beside their indices: the stable sort's indices.
+TEST(argsort_of_short_lines_as_the_stable_sort)
+{
+  EXPECT(short_argsorts_drawn_match_the_stable_sort<double>());
+  EXPECT(short_argsorts_drawn_match_the_stable_sort<float>());
+  EXPECT(short_argsorts_drawn_match_the_stable_sort<std::int64_t>());
+}
+
 // select_keys at every depth, its partitions' bound reached at once (std::nth_element key by key) or after one: the
 // sort's elements at the keys, for distinct values, repeats and one value alone, doubles and integers.
 TEST(select_keys_at_every_depth_as_the_sort)
