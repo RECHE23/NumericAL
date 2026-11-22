@@ -40,21 +40,30 @@ make bench-linalg                      # SIZES=64,128,256,512,1024 ROUNDS=3; JSO
 make fuzz-linalg CASES=1000 SEED=2     # the decompositions on adversarial matrices, every GEMM path
 ```
 
-**Apple M1 Pro** (8 cores; NumPy 2.5.4 on Accelerate; NumericAL v2026.10.14, the published wheel, the AMX path
-chosen at run time), 2026-10-15, beside a desktop session (load 3.5 to 5 across the run):
+**Apple M1 Pro** (8 cores; NumPy 2.4.2 on Accelerate; NumericAL b93566e, built in place with the wheels' flags, the
+AMX path chosen at run time), 2026-11-22, beside a desktop session (load 3.6 as it started, 12.5 over the quarter
+hour before):
 
 | operation | n = 64 | n = 128 | n = 256 | n = 512 | n = 1024 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| matmul | 0.00342 ms (1.08×) | 0.0179 ms (1.18×) | 0.112 ms (1.10×) | 0.64 ms (1.11×) | 4.32 ms (**0.83×**) |
-| matvec | 0.000792 ms (**0.83×**) | 0.00229 ms (1.22×) | 0.00908 ms (2.16×) | 0.0206 ms (1.44×) | 0.0636 ms (**0.86×**) |
-| transpose | 0.00196 ms (1.07×) | 0.00717 ms (**0.95×**) | 0.0276 ms (**0.55×**) | 0.201 ms (**0.59×**) | 1.46 ms (**0.87×**) |
-| solve | 0.0233 ms (**0.92×**) | 0.0877 ms (1.19×) | 0.39 ms (1.35×) | 2.08 ms (1.13×) | 9.48 ms (**0.59×**) |
-| inverse | 0.0332 ms (**0.98×**) | 0.139 ms (1.15×) | 0.502 ms (**0.70×**) | 3.13 ms (**0.68×**) | 15.6 ms (**0.43×**) |
-| cholesky | 0.0133 ms (**0.98×**) | 0.0512 ms (1.17×) | 0.231 ms (**0.82×**) | 1.43 ms (**0.81×**) | 6.68 ms (**0.58×**) |
-| qr | 0.0792 ms (1.00×) | 0.265 ms (**0.72×**) | 1.2 ms (**0.61×**) | 6.37 ms (**0.63×**) | 45.1 ms (**0.73×**) |
-| eigh | 0.23 ms (**0.75×**) | 0.759 ms (**0.81×**) | 2.97 ms (**0.66×**) | 16.1 ms (**0.63×**) | 84.6 ms (**0.45×**) |
-| svd | 0.394 ms (1.05×) | 1.52 ms (1.05×) | 7.15 ms (**0.78×**) | 36.2 ms (**0.73×**) | 226 ms (**0.83×**) |
-| lstsq | 0.372 ms (**0.78×**) | 1.72 ms (**0.75×**) | 8.29 ms (**0.78×**) | 40.8 ms (**0.75×**) | 205 ms (**0.54×**) |
+| matmul | 0.00371 ms (1.16×) | 0.0177 ms (1.20×) | 0.106 ms (1.05×) | 0.614 ms (1.06×) | 4.34 ms (**0.87×**) |
+| matvec | 0.001 ms (1.04×) | 0.00271 ms (1.51×) | 0.00667 ms (1.65×) | 0.0183 ms (1.31×) | 0.0626 ms (**0.84×**) |
+| solve | 0.0233 ms (**0.92×**) | 0.0684 ms (**0.95×**) | 0.303 ms (1.05×) | 1.63 ms (**0.92×**) | 6.93 ms (**0.43×**) |
+| inverse | 0.0342 ms (1.02×) | 0.149 ms (1.24×) | 0.544 ms (**0.77×**) | 2.96 ms (**0.69×**) | 13.3 ms (**0.38×**) |
+| cholesky | 0.0103 ms (**0.76×**) | 0.0375 ms (**0.86×**) | 0.19 ms (**0.67×**) | 0.868 ms (**0.54×**) | 3.88 ms (**0.34×**) |
+| qr | 0.0837 ms (1.06×) | 0.301 ms (**0.83×**) | 1.23 ms (**0.66×**) | 5.96 ms (**0.64×**) | 37.5 ms (**0.66×**) |
+| eigh | 0.24 ms (**0.78×**) | 0.802 ms (**0.86×**) | 2.93 ms (**0.66×**) | 14.9 ms (**0.60×**) | 75.8 ms (**0.42×**) |
+| eigvalsh | 0.123 ms (1.12×) | 0.493 ms (1.04×) | 2.23 ms (**0.81×**) | 12.4 ms (**0.65×**) | 58.4 ms (**0.36×**) |
+| svd | 0.385 ms (1.04×) | 1.46 ms (1.01×) | 6.36 ms (**0.70×**) | 32 ms (**0.65×**) | 192 ms (**0.71×**) |
+| svdvals | 0.163 ms (1.23×) | 0.822 ms (1.30×) | 4.26 ms (**0.79×**) | 25.2 ms (**0.80×**) | 136 ms (**0.73×**) |
+| lstsq | 0.334 ms (**0.70×**) | 1.6 ms (**0.71×**) | 7.29 ms (**0.70×**) | 38.6 ms (**0.72×**) | 190 ms (**0.51×**) |
+| eig | 0.664 ms (**0.55×**) | 3.84 ms (**0.40×**) | 16.6 ms (**0.60×**) | 106 ms (**0.44×**) | 490 ms (**0.49×**) |
+| slogdet | 0.0192 ms (1.04×) | 0.0608 ms (1.06×) | 0.287 ms (1.12×) | 1.5 ms (**0.84×**) | 6.62 ms (**0.95×**) |
+| matmul32 | 0.00213 ms (1.31×) | 0.00662 ms (1.31×) | 0.0436 ms (1.45×) | 0.229 ms (1.34×) | 1.35 ms (1.14×) |
+| inverse_stack | 0.0342 ms (**0.62×**) | 0.04 ms (**0.27×**) | 0.12 ms (**0.25×**) | 0.377 ms (**0.23×**) | 1.84 ms (**0.29×**) |
+
+`transpose` is a view since the tensors' views (no element copied, 0.5 µs at every order), and leaves this table;
+`inverse_stack` inverts a stack of 64 matrices of order n / 8 (4 at least). The x86-64 table below is of 2026-10-15 (v2026.10.14).
 
 **Intel i5-8500** (6 cores, AVX2, no hyperthreads, a host of its own; NumPy 2.5.4 on OpenBLAS 0.3.34; NumericAL
 v2026.10.14, the published wheel, built for the baseline x86-64 with the AVX2 path chosen at run time), 2026-10-15,
@@ -87,8 +96,10 @@ Where the gaps are, and what closes them:
   (0.2–0.5×; the C++ `numerical::lstsq` still does). At n = 1024 the inverse, Cholesky and `eigh` are ahead on both machines, and
   `solve`, the product and `svd` on the M1 Pro, where the inverse, Cholesky, `qr` and `eigh` lead from n = 256.
 - **Small problems on the M1 Pro** (n ≤ 256): Accelerate runs its AMX with little fixed cost, and the product of
-  order 64 to 256 is 1.08–1.18× its time, `solve` up to 1.35× (n = 256), the inverse up to 1.15×. The AMX path packs A for every product
-  (the AMX loads a row of each operand; a column of A is not one) and a product starts and stops the unit per task.
+  order 64 to 256 is 1.05–1.20× its time, its float32 one 1.31–1.45×, the inverse up to 1.24× (n = 128) and the
+  singular values alone up to 1.30×; `solve`, Cholesky, `eigh` and `lstsq` are ahead from n = 64. The AMX path packs A
+  for every product (the AMX loads a row of each operand; a column of A is not one) and a product starts and stops the
+  unit per task.
 - **One x86-64 core** runs the product at about 0.85–0.9× OpenBLAS's rate (49 GFLOP/s against 56 on this host):
   the loop order keeps the A sliver in L1 (BLIS's order), and what is left is the wait on B and C from memory and
   the packing passes. Fusing the packing into the first compute pass (GEMMFIP) is the next step to try.
@@ -136,6 +147,14 @@ cases.
 | 93d623a (2026.11.0: 2026.10.41 and five changes) | M1 Pro, NumPy 2.4.2 on Accelerate | 1.54× [1.47–1.61] | 78 % |
 | 93d623a | six AVX2 cores, NumPy 2.5.4 on OpenBLAS | 1.66× [1.56–1.75] | 77 % |
 | 93d623a | ten AVX-512 cores, NumPy 2.5.4 on OpenBLAS | 1.95× [1.84–2.05] | 85 % |
+| b93566e (2026.11.20 and 23 changes) | M1 Pro, NumPy 2.4.2 on Accelerate | 1.55× [1.48–1.63] | 79 % |
+
+`make bench-fuzz FAMILY=array` draws NumPy's array operations instead (element-wise arithmetic and functions,
+comparisons and `where`, the reductions and `cumsum`, sorting, the sets, indexing, `concatenate`; int64 among the
+dtypes), apart from the table above: on the M1 Pro at b93566e, 300 cases, 0.92× [0.85–0.99], NumericAL faster in 37 %
+(0.61× when the family was added, at 6ea4281, on 80 cases to order 256). Its gaps are a call's fixed cost on small
+arrays (`add` and `take` 0.5–0.6×) and integer NumPy arrays, which `asarray` reads as float64 (converted and
+copied) until integers are read as int64, a change that waits for a month's first release.
 
 Under load the gap widens: NumPy's OpenBLAS threads wait for cores the busy processes hold, where NumericAL's pool
 runs no more threads than it is given. From a10f188 the draw adds `einsum-each` (calls that sum nothing), whose

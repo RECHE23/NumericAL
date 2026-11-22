@@ -128,11 +128,11 @@ build and the gates.
 
 ## Benchmarks
 
-On an M1 Pro against Accelerate, at order 1024, matrix products, `solve` and `inverse` are as fast or faster (0.94×),
-Cholesky, QR and `eigh` within 1.0–1.2×, `svd` and `lstsq` 1.3–1.4×; small problems (order 64–256) take 1.5–3×
-Accelerate's time. Against OpenBLAS on x86-64 (i9-10900X, i9-9900K) large problems (order 512 and 1024) take
-1.1–2.5×, `eigh` 2.6–2.9×. `make bench-linalg` times NumericAL against the BLAS and LAPACK NumPy ships, each library
-alone in its process, every answer checked first. The tables, the method and where the gaps are:
+On an M1 Pro against Accelerate (2026-11-22), at order 1024 every float64 operation is faster: `solve` 0.43×, the
+inverse 0.38×, Cholesky 0.34×, `eigh` 0.42×, `qr` 0.66×, `svd` 0.71×, `lstsq` 0.51×, the product 0.87×; at orders 64
+to 256 most are within 0.7–1.2×, the product 1.05–1.20× and its float32 one 1.3–1.45×. Against OpenBLAS on a six-core
+AVX2 i5-8500 (2026-10-15) the order-1024 figures run 0.73–1.22×, `qr` ahead at every order. `make bench-linalg` times
+NumericAL against the BLAS and LAPACK NumPy ships, each library alone in its process, every answer checked first. The tables, the method and where the gaps are:
 [BENCHMARKS.md](https://github.com/RECHE23/NumericAL/blob/main/BENCHMARKS.md).
 
 ## Changes
