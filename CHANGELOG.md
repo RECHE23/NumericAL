@@ -118,6 +118,17 @@ A change that can break code is listed under **Breaking** and held for a month's
   `where` 88 → 57 µs (NumPy 57), `greater` of a 9 × 9 array and 0 3.8 → 0.7 µs (NumPy 0.6). A Python float beside them,
   an int past int64, or another integer dtype, through the converting path as before.
 
+### Added
+
+- **`asarray` reads what NumPy reads**: a `range`, a buffer (`array.array`, a `memoryview`, a `bytearray`, its integers as
+  int64), an object with `__array__` (pandas, xarray, torch on the CPU) and a list of NumPy arrays, stacked as a list
+  of Tensors is; each was refused (found by an audit).
+
+### Fixed
+
+- **`nanmax` and `nanmin` of a NumPy bool array** answer bools, and the other NaN reductions NumPy's dtypes, where the
+  array was read as numbers first (int64 extremes).
+
 ## 2026.11.21 — 2026-11-22
 
 ### Changed
@@ -178,10 +189,6 @@ A change that can break code is listed under **Breaking** and held for a month's
   complex128), apart from the NumPy figures BENCHMARKS.md follows, and every case of every family has a time limit
   (`TIMEOUT=`, 30 s a side by default) past which it is reported and left out, where one slow case held a run for hours.
 
-- **`asarray` reads what NumPy reads**: a `range`, a buffer (`array.array`, a `memoryview`, a `bytearray`, its integers as
-  int64), an object with `__array__` (pandas, xarray, torch on the CPU) and a list of NumPy arrays, stacked as a list
-  of Tensors is; each was refused (found by an audit).
-
 ### Fixed
 
 - **A NumPy scalar first beside a Tensor gives a Tensor**: `numerical.multiply(np.float64(2), t)` (and `add`,
@@ -204,8 +211,6 @@ A change that can break code is listed under **Breaking** and held for a month's
   are a transpose's. Python's indexing takes no step of 0 (NumPy's rule) and was not reached. Found by an audit
 - **`count_nonzero` over axes out of order** (`axis=(1, 0)`) counts them all, where it raised AxisError past the first,
   and so do `nanmean`, `nanvar` and `nanstd` of an array with NaNs, which count through it. Found by an audit
-- **`nanmax` and `nanmin` of a NumPy bool array** answer bools, and the other NaN reductions NumPy's dtypes, where the
-  array was read as numbers first (int64 extremes).
 
 ## 2026.11.20 — 2026-11-20
 
