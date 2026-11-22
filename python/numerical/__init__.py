@@ -8358,14 +8358,25 @@ def _borrowed_arithmetic(op, x1, x2):
         return NotImplemented
     if not _numpy_loops_measured and op in "*/":
         _numpy_loops()
-    return _native(_numerical._borrowed_binary, op, x1, x2)
+    try:
+        return _numerical._borrowed_binary(op, x1, x2)
+    except error as caught:  # shapes that do not broadcast, as _native raises it
+        raise _ShapeError(*caught.args) from None
+
+
+_ARRAY_LIKE_TYPES = {}  # type -> whether its instances are array-likes (_array_like): an isinstance of numbers.Number
+# walks the ABC machinery for a type that is none (a NumPy array: 0.2 µs a call, half of a small add's time)
 
 
 def _array_like(x):
-    """Whether `x` is neither a Tensor, a number nor a list or tuple: an array, which :func:`asarray` would copy."""
+    """Whether `x` is neither a Tensor, a number nor a list or tuple: an array, which :func:`asarray` would copy. The
+    answer is its type's, kept once found."""
     kind = type(x)
-    return (kind is not Tensor and kind not in _NATIVE_NUMBERS and kind is not list and kind is not tuple
-            and not isinstance(x, _numbers.Number))
+    known = _ARRAY_LIKE_TYPES.get(kind)
+    if known is None:
+        known = _ARRAY_LIKE_TYPES[kind] = (kind is not Tensor and kind not in _NATIVE_NUMBERS and kind is not list
+                                           and kind is not tuple and not issubclass(kind, _numbers.Number))
+    return known
 
 
 def _binary_operands(x1, x2):
