@@ -1748,12 +1748,30 @@ namespace numerical::detail {
   //!        order 128 on AVX-512.
   inline constexpr std::size_t gemm_rows_share {std::size_t {1} << 19U};
 
+#if defined(NUMERICAL_AMX_COMPILED) && defined(__clang__) // by_rows' rule for Clang on arm64 (GCC's is x86-64's)
+  /*!
+   * \brief The deepest product the AMX path leaves to \ref gemm_rows where its rows take \ref amx_shallow_threads
+   *        threads or more: the AMX shares out none of a shallow product's work among the cores (1000 × 16 by 16 × 1000,
+   *        M1 Pro, 305 µs on one thread and on eight), where the rows' blocks run on all of them (184 µs on eight). On
+   *        180 drawn products of depth 8 to 16 on eight threads, those it moves took 0.36 times as long (geometric mean),
+   *        none longer than 0.89; past it, depth 32 had products 1.7 times as long by rows. NEON's packed tiles share the
+   *        work themselves: the same products on the NEON path took 1.01 times as long by rows, so it keeps them.
+   */
+  inline constexpr std::size_t amx_shallow_depth {16};
+
+  //! \brief The threads \ref gemm_rows' blocks must take for \ref amx_shallow_depth's products to run by rows: on fewer,
+  //!        the AMX's single unit kept them ahead (145 × 11 by 11 × 160 on one thread by rows, 2.2 times as long).
+  inline constexpr std::size_t amx_shallow_threads {3};
+#endif
+
   /*!
    * \brief Whether \ref gemm runs an `m × k` by `k × n` product by rows (\ref gemm_rows): \ref gemm_rows_columns columns
    *        or fewer; or, from \ref narrow_group rows, \ref gemm_rows_work multiply-adds or fewer, or \ref gemm_rows_share
    *        a thread where its blocks of rows give at least half the threads one each (fewer, and the packed product's
    *        tasks, which split the columns too, are faster: 12 × 302 by 302 × 389 on ten AVX-512 cores, 1.6 times). Where
-   *        the target's packed tiles do not keep a small product ahead.
+   *        the target's packed tiles do not keep a small product ahead; there (Clang on arm64), on the AMX path, a
+   *        product of `amx_shallow_depth` or less whose rows take `amx_shallow_threads` threads or more (where the AMX
+   *        path is compiled).
    */
   [[nodiscard]] inline bool by_rows([[maybe_unused]] std::size_t m,
                                     std::size_t                  n,
@@ -1768,7 +1786,15 @@ namespace numerical::detail {
     const std::size_t threads {std::min(all, m / narrow_group)};
     return m >= narrow_group && 2 * threads >= all && m * n * k <= gemm_rows_share * threads;
 #else
-    return n <= gemm_rows_columns; // Clang on arm64: the AMX's and NEON's packed tiles kept small products ahead
+    if (n <= gemm_rows_columns) {
+      return true;
+    }
+#  if defined(NUMERICAL_AMX_COMPILED)
+    if (k <= amx_shallow_depth && gemm_path_current() == gemm_path::amx) { // gemm_rows' blocks, as it shares them out
+      return parallel_threads((m + narrow_group - 1) / narrow_group, narrow_group * k * n / gemm_rows_weight) >= amx_shallow_threads;
+    }
+#  endif
+    return false; // Clang on arm64: the AMX's and NEON's packed tiles kept small products ahead
 #endif
   }
 

@@ -10,6 +10,11 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ### Changed
 
+- **Shallow products on the AMX run by rows on the cores** (depth 8 to 16, where the rows take three threads or
+  more): the AMX shares none of a shallow product's work among the cores, where the rows' blocks run on all of them; on
+  180 drawn products of that depth, an M1 Pro on eight threads, 0.36 times as long (none longer than 0.89), 1000 × 16
+  by 16 × 1000 305 → 195 µs (NumPy 453), 1000 × 8 by 8 × 100 61 → 24 µs (NumPy 32). The same bits. The NEON path and one
+  thread keep their products.
 - **`+`, `-`, `*` and `/` read a NumPy array where it lies**, beside another, a Tensor or a Python float or int, where
   they copied it into a Tensor first (`add`, `subtract`, `multiply`, `divide` and the Tensor operators): for float32,
   float64, complex64 and complex128 operands of one dtype, broadcast or not, an M1 Pro 10⁵ doubles added 93 → 25 µs,

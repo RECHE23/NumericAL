@@ -166,6 +166,47 @@ TEST(narrow_products_by_rows_give_the_packed_bits)
                        }));
 }
 
+// On the AMX path, a product of amx_shallow_depth or less whose rows take amx_shallow_threads threads or more runs by
+// rows (the AMX shares none of a shallow product among the cores): the packed bits; on fewer threads, deeper, or on the
+// NEON path (whose packed tiles share it), packed. Elsewhere (no AMX, or GCC's rule), the packed bits alone.
+TEST(shallow_products_on_the_amx_run_by_rows_on_three_threads_or_more)
+{
+  numerical::set_max_threads(8);
+#if defined(NUMERICAL_AMX_COMPILED) && defined(__clang__) // by_rows' rule for Clang on arm64 (GCC's is x86-64's)
+  using numerical::detail::by_rows;
+  const bool        amx     {numerical::limit_gemm_path(numerical::gemm_path::amx) == numerical::gemm_path::amx};
+  const bool        threads {numerical::detail::hardware_threads() >= 3};
+  const std::size_t depth   {numerical::detail::amx_shallow_depth};
+  EXPECT(by_rows(1000, 1000, depth) == (amx && threads));
+  EXPECT(!by_rows(1000, 1000, depth + 1));
+  EXPECT(!by_rows(40, 100, depth)); // its rows take one thread
+  numerical::set_max_threads(1);
+  EXPECT(!by_rows(1000, 1000, depth));
+  numerical::set_max_threads(8);
+  (void)numerical::limit_gemm_path(numerical::gemm_path::neon);
+  EXPECT(!by_rows(1000, 1000, depth));
+  (void)numerical::limit_gemm_path(numerical::gemm_path::amx);
+#endif
+  bool same {true};
+  for (const auto& [m, n, k] : {std::array<std::size_t, 3> {300, 300, 12}, {1000, 100, 8}, {120, 1200, 16}, {97, 333, 9}}) {
+    std::vector<double> a(m * k);
+    std::vector<double> b(k * n);
+    for (std::size_t i {0}; i < a.size(); ++i) {
+      a[i] = fill<double>(i);
+    }
+    for (std::size_t i {0}; i < b.size(); ++i) {
+      b[i] = fill<double>((i * 7) + 3);
+    }
+    std::vector<double> chosen(m * n, 0.0);
+    std::vector<double> packed(m * n, 0.0);
+    numerical::detail::gemm(m, n, k, a.data(), k, b.data(), n, chosen.data(), n);
+    numerical::detail::gemm_large(m, n, k, a.data(), k, b.data(), n, packed.data(), n);
+    same = same && chosen == packed;
+  }
+  numerical::set_max_threads(0); // every thread again
+  EXPECT(same);
+}
+
 // Complex products by rows (gemm_rows, which the LU's and the Cholesky factorisation's panels call): each element its
 // start (C's own, or zero) plus a(i,p)·b(p,j) for p ascending, the library's product rounded before its sum, on every
 // path and width (the x86-64 vectors' two columns apiece and a last one alone, past four columns in two parts), and
