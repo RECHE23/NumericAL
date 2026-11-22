@@ -58,6 +58,36 @@ A change that can break code is listed under **Breaking** and held for a month's
   build from the sdist (GCC 13) differed on some results in the last bits. Clang on arm64 no longer wants
   `-mllvm -force-ordered-reductions=false`: its sums of products round alike, vectorised or not.
 
+### Changed
+
+- **NumPy int64 arrays are read where they lie** by `+ - * /`, the comparisons and `where`, as the float and complex
+  ones: beside another, an int64 Tensor or a Python int an int64 holds, the Tensors' answer to the byte (wrapped, the
+  quotient in float64), without their copy into a Tensor. M1 Pro, `add` of 10⁵ elements 109 → 20 µs (NumPy 20),
+  `where` 88 → 57 µs (NumPy 57), `greater` of a 9 × 9 array and 0 3.8 → 0.7 µs (NumPy 0.6). A Python float beside them,
+  an int past int64, or another integer dtype, through the converting path as before.
+
+### Added
+
+- **`asarray` reads what NumPy reads**: a `range`, a buffer (`array.array`, a `memoryview`, a `bytearray`, its integers as
+  int64), an object with `__array__` (pandas, xarray, torch on the CPU) and a list of NumPy arrays, stacked as a list
+  of Tensors is; each was refused (found by an audit).
+
+### Fixed
+
+- **`nanmax` and `nanmin` of a NumPy bool array** answer bools, and the other NaN reductions NumPy's dtypes, where the
+  array was read as numbers first (int64 extremes).
+
+### Announced for 2027.1.0
+
+- **A reduction to a number answers a rank-0 Tensor for float32, complex64 and int64** (the dtypes Python's numbers do
+  not hold: a float32 variance, an int64 sum past 2⁶³), as the array API's and NumPy's scalars keep their dtype; a
+  float64, complex128 or bool one stays a Python number.
+- **NumPy's functions on a Tensor answer a Tensor** (NEP 13 and NEP 18): `np.exp(t)`, `np.add(a, t)`, `np.sort(t)`,
+  `np.concatenate([t, t])` and the operators of a NumPy array beside a Tensor (`a + t`, `a == t`, `a @ t`) call
+  NumericAL's function of the same name, where they answer an ndarray today. A call NumericAL does not take (`out=`
+  an ndarray, `where=`, a dtype it does not hold) stays NumPy's; `out=` a Tensor raises ValueError, as for a
+  read-only array. Code that wants an ndarray converts first: `np.asarray(t)`.
+
 ## 2026.11.24 — 2026-11-24
 
 ### Changed
@@ -112,22 +142,6 @@ A change that can break code is listed under **Breaking** and held for a month's
 - **The linear quantiles of float64 and float32 lines are computed in C** (`method="linear"`, float64 `q`), each
   operation rounded as the tensor operations rounded it, the bits unchanged: some 150 tensor operations of one element
   before, 100 doubles 45 → 9.5 µs (NumPy 25), 100 × 100 along an axis, three quantiles 551 → 73 µs (NumPy 232).
-- **NumPy int64 arrays are read where they lie** by `+ - * /`, the comparisons and `where`, as the float and complex
-  ones: beside another, an int64 Tensor or a Python int an int64 holds, the Tensors' answer to the byte (wrapped, the
-  quotient in float64), without their copy into a Tensor. M1 Pro, `add` of 10⁵ elements 109 → 20 µs (NumPy 20),
-  `where` 88 → 57 µs (NumPy 57), `greater` of a 9 × 9 array and 0 3.8 → 0.7 µs (NumPy 0.6). A Python float beside them,
-  an int past int64, or another integer dtype, through the converting path as before.
-
-### Added
-
-- **`asarray` reads what NumPy reads**: a `range`, a buffer (`array.array`, a `memoryview`, a `bytearray`, its integers as
-  int64), an object with `__array__` (pandas, xarray, torch on the CPU) and a list of NumPy arrays, stacked as a list
-  of Tensors is; each was refused (found by an audit).
-
-### Fixed
-
-- **`nanmax` and `nanmin` of a NumPy bool array** answer bools, and the other NaN reductions NumPy's dtypes, where the
-  array was read as numbers first (int64 extremes).
 
 ## 2026.11.21 — 2026-11-22
 
@@ -704,17 +718,6 @@ A change that can break code is listed under **Breaking** and held for a month's
 - **`log1p` of a complex zero** is that zero, its signs kept (`-0 + 0j` gives `-0 + 0j`), as `log1p` of a real −0,
   where the real part was +0; and **of a complex number whose `|1 + z|` passes the largest finite value** is finite,
   `log(1 + z)` scaled as `log` scales (`1.5e308 + 1.5e308j`: 709.95 + 0.785j), where it was infinite, as NumPy's.
-
-### Announced for 2027.1.0
-
-- **A reduction to a number answers a rank-0 Tensor for float32, complex64 and int64** (the dtypes Python's numbers do
-  not hold: a float32 variance, an int64 sum past 2⁶³), as the array API's and NumPy's scalars keep their dtype; a
-  float64, complex128 or bool one stays a Python number.
-- **NumPy's functions on a Tensor answer a Tensor** (NEP 13 and NEP 18): `np.exp(t)`, `np.add(a, t)`, `np.sort(t)`,
-  `np.concatenate([t, t])` and the operators of a NumPy array beside a Tensor (`a + t`, `a == t`, `a @ t`) call
-  NumericAL's function of the same name, where they answer an ndarray today. A call NumericAL does not take (`out=`
-  an ndarray, `where=`, a dtype it does not hold) stays NumPy's; `out=` a Tensor raises ValueError, as for a
-  read-only array. Code that wants an ndarray converts first: `np.asarray(t)`.
 
 ## 2026.11.14 — 2026-11-13
 

@@ -8068,7 +8068,10 @@ def _quantiles(a, q, axis, method, keepdims, ignore_nans, weak, name):
         result = _numerical._quantile_linear(joined, flat_q, weak)
         if result is not NotImplemented:
             result = _permuted(result, [len(rest)] + list(range(len(rest)))) if rest else result
-            return _kept_dims(reshape(result, lead + rest), a, axes, lead, keepdims)
+            result = reshape(result, lead + rest)
+            if not result.shape and result.dtype != a.dtype and isnan(result) and any(isnan(joined)):
+                result = asarray(result, a.dtype)  # a NaN's line answers its last value, a number in its dtype as NumPy's
+            return _kept_dims(result, a, axes, lead, keepdims)
     if ignore_nans and inexact:
         n = count_nonzero(~isnan(joined), axis=-1, keepdims=True)  # one count per slice: rest + (1,)
         q_along = reshape(flat_q, (1,) * len(rest) + (flat_q.shape[0],))
