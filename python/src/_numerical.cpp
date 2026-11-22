@@ -231,6 +231,8 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
           "mode 0 raise, 1 wrap, 2 clip.");
     m.raw("_select", module_select, METH_VARARGS,
           "_select(a, positions) -> Tensor\nThe elements a stable sort of each line along the last axis puts at positions.");
+    m.raw("_quantile_linear", module_quantile_linear, METH_VARARGS,
+          "_quantile_linear(a, q, weak) -> Tensor or NotImplemented\nThe linear quantiles at q of each line along the last axis.");
     m.raw("_correlate", module_correlate, METH_VARARGS, "_correlate(a, v, first, count) -> Tensor\nThe cross-correlation over count lags from first.");
     m.raw("_complex_from_parts", module_complex_from_parts, METH_VARARGS, "_complex_from_parts(re, im) -> Tensor\nre + im·i, exactly.");
     m.raw("_interp", module_interp, METH_VARARGS, "_interp(x, xp, fp, left, right, fused) -> Tensor\nnumpy.interp's linear interpolation.");

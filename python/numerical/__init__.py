@@ -7787,6 +7787,11 @@ def _quantiles(a, q, axis, method, keepdims, ignore_nans, weak, name):
     rest = joined.shape[:-1]
     lead = q.shape
     flat_q = reshape(q, (-1,))
+    if method == "linear" and not ignore_nans and inexact and flat_q.dtype == "float64":  # in C, the bits below
+        result = _numerical._quantile_linear(joined, flat_q, weak)
+        if result is not NotImplemented:
+            result = _permuted(result, [len(rest)] + list(range(len(rest)))) if rest else result
+            return _kept_dims(reshape(result, lead + rest), a, axes, lead, keepdims)
     if ignore_nans and inexact:
         n = count_nonzero(~isnan(joined), axis=-1, keepdims=True)  # one count per slice: rest + (1,)
         q_along = reshape(flat_q, (1,) * len(rest) + (flat_q.shape[0],))

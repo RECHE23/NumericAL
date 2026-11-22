@@ -1809,6 +1809,8 @@ PyObject* module_take_along_axis(PyObject* /*self*/, PyObject* args);    // in e
 // _take_indices(a, indices, axis, mode) -> Tensor: numpy.take's elements, mode 0 raise, 1 wrap, 2 clip.
 PyObject* module_take_indices(PyObject* /*self*/, PyObject* args);       // in elementwise.cpp
 PyObject* module_select(PyObject* /*self*/, PyObject* args);             // in elementwise.cpp
+// _quantile_linear(a, q, weak) -> Tensor or NotImplemented: _quantiles' linear method, line by line.
+PyObject* module_quantile_linear(PyObject* /*self*/, PyObject* args);    // in elementwise.cpp
 PyObject* module_correlate(PyObject* /*self*/, PyObject* args);          // in elementwise.cpp
 PyObject* module_complex_from_parts(PyObject* /*self*/, PyObject* args); // in elementwise.cpp
 // _interp(x, xp, fp, left, right, fused) -> Tensor: numpy.interp's loop.

@@ -15,6 +15,9 @@ A change that can break code is listed under **Breaking** and held for a month's
   each position mispredicted a branch on half the elements: M1 Pro, 10⁵ doubles, one quantile 1.75 → 0.32 ms (NumPy
   1.3), three 3.3 → 0.59 ms (NumPy 1.8), the median 0.36 ms (NumPy 1.1); 10⁶, three quantiles 5.6 ms (NumPy 21). The
   same elements, the stable sort's.
+- **The linear quantiles of float64 and float32 lines are computed in C** (`method="linear"`, float64 `q`), each
+  operation rounded as the tensor operations rounded it, the bits unchanged: some 150 tensor operations of one element
+  before, 100 doubles 45 → 9.5 µs (NumPy 25), 100 × 100 along an axis, three quantiles 551 → 73 µs (NumPy 232).
 
 ## 2026.11.21 — 2026-11-22
 

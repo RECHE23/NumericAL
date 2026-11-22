@@ -1160,6 +1160,155 @@ PyObject* module_select(PyObject* /*self*/, PyObject* args)
     }
 }
 
+namespace {
+
+// One line's linear quantiles, as _quantiles computes them (NumPy's _quantile, method "linear"): each q's virtual index
+// (n - 1) q, its neighbours floor and floor + 1 (both the last value from n - 1 up, both the first below 0), gamma the
+// index less the first neighbour, and _lerp of the two values a stable sort puts there; the line's last value (a NaN,
+// the stable sort's last) where it holds one. Each operation rounded alone, as the tensor operations round them: a in
+// T, b - a in T, the rest in R (T, or float64 for a float32 line beside float64 quantiles), a weak q's gamma and 1 -
+// gamma (computed in float64) each rounded to R. `at` and `picked` hold 2 m + 1 positions and values of scratch.
+template <typename T, typename R>
+void linear_quantiles_of_line(const T* row, std::size_t n, const double* q, std::size_t m, T* work, std::int64_t* at,
+                              T* picked, R* out)
+{
+    namespace d = numerical::detail;
+    const auto   last {static_cast<double>(n - 1)};
+    const auto   to_position {[n](double index) {
+        const auto position {static_cast<std::int64_t>(index)};
+        return position < 0 ? position + static_cast<std::int64_t>(n) : position;
+    }};
+    bool nan {false};
+    for (std::size_t i {0}; i < n && !nan; ++i) {
+        nan = std::isnan(row[i]);
+    }
+    for (std::size_t j {0}; j < m; ++j) {
+        const double index {last * q[j]};
+        double       previous {std::floor(index)};
+        double       following {previous + 1.0};
+        if (index < 0.0) {
+            previous  = 0.0;
+            following = 0.0;
+        }
+        else if (index >= last) {
+            previous  = -1.0;
+            following = -1.0;
+        }
+        at[j]     = to_position(previous);
+        at[m + j] = to_position(following);
+    }
+    const std::size_t count {nan ? (2 * m) + 1 : 2 * m};
+    at[2 * m] = static_cast<std::int64_t>(n - 1);
+    if (count <= d::select_positions_sorted) {
+        d::select_row(row, n, at, count, work, picked);
+    }
+    else { // more than a selection takes: the line sorted whole, as select_row would
+        std::copy(row, row + n, work);
+        d::sort_run(work, work + n);
+        for (std::size_t j {0}; j < count; ++j) {
+            picked[j] = work[static_cast<std::size_t>(at[j])];
+        }
+    }
+    for (std::size_t j {0}; j < m; ++j) {
+        if (nan) {
+            out[j] = static_cast<R>(picked[2 * m]);
+            continue;
+        }
+        const double index {last * q[j]};
+        double       previous {std::floor(index)};
+        if (index < 0.0) {
+            previous = 0.0;
+        }
+        else if (index >= last) {
+            previous = -1.0;
+        }
+        const double gamma {index - previous};
+        const T      a {picked[j]};
+        const T      b {picked[m + j]};
+        const T      difference {b - a};
+        if (gamma >= 0.5) {
+            const auto weight {static_cast<R>(1.0 - gamma)};
+            const R    product {static_cast<R>(difference) * weight};
+            out[j] = static_cast<R>(b) - product;
+        }
+        else {
+            const auto weight {static_cast<R>(gamma)};
+            const R    product {static_cast<R>(difference) * weight};
+            out[j] = static_cast<R>(a) + product;
+        }
+    }
+}
+
+} // namespace
+
+// _quantile_linear(a, q, weak) -> Tensor or NotImplemented: the linear quantiles at the float64 q (a vector) of each
+// line along a's last axis (float64 or float32, lines not empty), of shape a's lines and len(q): _quantiles' answer
+// to the bit for method "linear" without NaNs ignored (linear_quantiles_of_line), in a's dtype, or float64 for a
+// float32 a beside q not weak (a Tensor). NotImplemented for anything else, which _quantiles computes as before. It
+// took some 150 tensor operations of one element: 45 µs for 100 doubles, where NumPy takes 26.
+PyObject* module_quantile_linear(PyObject* /*self*/, PyObject* args)
+{
+    PyObject* x    = nullptr;
+    PyObject* y    = nullptr;
+    int       weak = 0;
+    if (PyArg_ParseTuple(args, "OOp", &x, &y, &weak) == 0) {
+        return nullptr;
+    }
+    auto* const type {reinterpret_cast<PyTypeObject*>(sb::class_type<any_tensor>())};
+    if (PyObject_TypeCheck(x, type) == 0 || PyObject_TypeCheck(y, type) == 0) {
+        return Py_NewRef(Py_NotImplemented);
+    }
+    const any_tensor* a {reinterpret_cast<sb::wrapper<any_tensor>*>(x)->held};
+    const any_tensor* b {reinterpret_cast<sb::wrapper<any_tensor>*>(y)->held};
+    const auto*       q {b == nullptr ? nullptr : std::get_if<real_tensor>(b)};
+    if (a == nullptr || q == nullptr || q->rank() != 1 || (a->index() != 0 && a->index() != 2)) {
+        return Py_NewRef(Py_NotImplemented);
+    }
+    const std::vector<std::size_t> shape {shape_of(*a)};
+    if (shape.empty() || shape.back() == 0) {
+        return Py_NewRef(Py_NotImplemented);
+    }
+    try {
+        std::optional<any_tensor> result;
+        const auto                compute = [&]<typename T, typename R>(const numerical::tensor<T>& t, std::type_identity<R>) {
+            const std::size_t n {shape.back()};
+            const std::size_t m {q->size()};
+            const std::size_t lines {t.size() / n};
+            std::vector<std::size_t> out_shape(shape.begin(), shape.end() - 1);
+            out_shape.push_back(m);
+            numerical::buffer<R> out(lines * m);
+            const T* const       in {t.data().data()};
+            const double* const  qs {q->data().data()};
+            {
+                const sb::scoped_gil_release unlocked {releases_gil(t.size())};
+                const std::size_t            block {std::max<std::size_t>(1, 4096 / n)};
+                numerical::detail::parallel_for((lines + block - 1) / block, block * n * 16, [&](std::size_t chunk) {
+                    numerical::buffer<T>            work(n);
+                    std::vector<std::int64_t>       at((2 * m) + 1);
+                    numerical::buffer<T>            picked((2 * m) + 1);
+                    for (std::size_t line {chunk * block}; line < std::min(lines, (chunk + 1) * block); ++line) {
+                        linear_quantiles_of_line(in + (line * n), n, qs, m, work.data(), at.data(), picked.data(), out.data() + (line * m));
+                    }
+                });
+            }
+            result.emplace(numerical::tensor<R> {std::move(out_shape), std::move(out)});
+        };
+        if (const auto* t {std::get_if<real_tensor>(a)}) {
+            compute(*t, std::type_identity<double> {});
+        }
+        else if (weak != 0) {
+            compute(std::get<single_tensor>(*a), std::type_identity<float> {});
+        }
+        else {
+            compute(std::get<single_tensor>(*a), std::type_identity<double> {});
+        }
+        return wrap(std::move(*result));
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
 // _correlate(a, v, first, count) -> Tensor: numerical::correlate of two vectors of one dtype over count lags from
 // first.
 PyObject* module_correlate(PyObject* /*self*/, PyObject* args)
