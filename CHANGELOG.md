@@ -112,6 +112,11 @@ A change that can break code is listed under **Breaking** and held for a month's
 - **The linear quantiles of float64 and float32 lines are computed in C** (`method="linear"`, float64 `q`), each
   operation rounded as the tensor operations rounded it, the bits unchanged: some 150 tensor operations of one element
   before, 100 doubles 45 → 9.5 µs (NumPy 25), 100 × 100 along an axis, three quantiles 551 → 73 µs (NumPy 232).
+- **NumPy int64 arrays are read where they lie** by `+ - * /`, the comparisons and `where`, as the float and complex
+  ones: beside another, an int64 Tensor or a Python int an int64 holds, the Tensors' answer to the byte (wrapped, the
+  quotient in float64), without their copy into a Tensor. M1 Pro, `add` of 10⁵ elements 109 → 20 µs (NumPy 20),
+  `where` 88 → 57 µs (NumPy 57), `greater` of a 9 × 9 array and 0 3.8 → 0.7 µs (NumPy 0.6). A Python float beside them,
+  an int past int64, or another integer dtype, through the converting path as before.
 
 ## 2026.11.21 — 2026-11-22
 

@@ -313,6 +313,87 @@ class BorrowedOperands(unittest.TestCase):
         with self.assertRaises(ValueError):  # a broadcast refused as the Tensors refuse it
             numerical.add(np.ones(3), np.ones(4))
 
+    def integers(self, shape):
+        # An int64 operand whose first elements are the extremes, -1, 0 and 1: sums and products that wrap, quotients
+        # by zero.
+        x = self.rng.integers(-2**63, 2**63 - 1, shape, dtype=np.int64, endpoint=True)
+        flat = x.reshape(-1)
+        values = [2**63 - 1, -2**63, 0, -1, 1]
+        flat[:len(values)] = values[:flat.size]
+        return x
+
+    def test_int64_arrays_are_read_where_they_lie_and_answer_as_the_tensors(self):
+        # + - * / and the comparisons of int64 NumPy arrays, read where they lie, beside another, an int64 Tensor or a
+        # Python int an int64 holds: the Tensors' result to the byte (wrapped; the quotient in float64, inf and nan by
+        # zero), broadcast every way, empty, a million elements, strided and Fortran-ordered (copied where small,
+        # through a Tensor where large), by the functions, the operators and the reflected operators; where alike. A
+        # Python float or an int past int64 beside them, or int32 arrays, through the converting path, unchanged.
+        borrowed, compare, where = (numerical._numerical._borrowed_binary, numerical._numerical._borrowed_compare,
+                                    numerical._numerical._borrowed_where)
+        functions = {"+": numerical.add, "-": numerical.subtract, "*": numerical.multiply, "/": numerical.divide}
+        reflected = {"+": "__radd__", "-": "__rsub__", "*": "__rmul__", "/": "__rtruediv__"}
+        relations = {"<": numerical.less, "<=": numerical.less_equal, "==": numerical.equal, "!=": numerical.not_equal,
+                     ">": numerical.greater, ">=": numerical.greater_equal}
+        pairs = (((7,), (7,)), ((3, 4), (4,)), ((3, 1), (1, 5)), ((), (5,)), ((2, 3), ()), ((0, 2), (2,)),
+                 ((1000, 1000), (1000,)))
+        for left, right in pairs:
+            a, b = self.integers(left), self.integers(right)
+            ta, tb = numerical.asarray(a), numerical.asarray(b)
+            for op, f in functions.items():
+                with self.subTest(left=left, right=right, op=op):
+                    want = np.asarray(f(ta, tb))
+                    self.assertEqual(want.dtype, np.float64 if op == "/" else np.int64)
+                    self.assertIsInstance(borrowed(op, a, b), numerical.Tensor)
+                    for got in (borrowed(op, a, b), f(a, b), f(ta, b), f(a, tb), {"+": ta + b, "-": ta - b, "*": ta * b, "/": ta / b}[op],
+                                getattr(tb, reflected[op])(a)):
+                        self.assert_same_bits(got, want)
+                    for number in (-3, 2**62 + 1, -2**63, 2**63 - 1):
+                        self.assert_same_bits(borrowed(op, a, number), f(ta, number))
+                        self.assert_same_bits(borrowed(op, number, a), f(number, ta))
+                    for number in (2.5, 2**63, -2**63 - 1):
+                        self.assertIs(borrowed(op, a, number), NotImplemented)
+                        try:
+                            want_number = f(ta, number)
+                        except Exception as caught:  # noqa: BLE001 - the same error either way
+                            with self.assertRaises(type(caught)):
+                                f(a, number)
+                            continue
+                        self.assert_same_bits(f(a, number), want_number)
+            for op, f in relations.items():
+                with self.subTest(left=left, right=right, relation=op):
+                    want = np.asarray(f(ta, tb))
+                    for got in (compare(op, a, b), f(a, b), f(ta, b), compare(op, ta, b)):
+                        self.assertEqual(np.asarray(got).tobytes(), want.tobytes())
+                    self.assertEqual(np.asarray(compare(op, a, -2**63)).tobytes(), np.asarray(f(ta, -2**63)).tobytes())
+                    self.assertIs(compare(op, a, 0.5), NotImplemented)
+                    self.assertIs(compare(op, a, 2**63), NotImplemented)
+                    self.assertEqual(np.asarray(f(a, 0.5)).tobytes(), np.asarray(f(ta, 0.5)).tobytes())
+            c = self.rng.standard_normal(left) > 0
+            with self.subTest(left=left, right=right, function="where"):
+                want = np.asarray(numerical.where(numerical.asarray(c), ta, tb)).tobytes()
+                self.assertEqual(np.asarray(where(c, a, b)).tobytes(), want)
+                self.assertEqual(np.asarray(numerical.where(c, a, -7)).tobytes(), np.asarray(numerical.where(numerical.asarray(c), ta, -7)).tobytes())
+                self.assertIs(where(c, a, 7.5), NotImplemented)
+                self.assertIs(where(c, a, 2**63), NotImplemented)
+                got, want_float = numerical.where(c, a, 7.5), numerical.where(numerical.asarray(c), ta, 7.5)
+                self.assertEqual((got.dtype, np.asarray(got).tobytes()), (want_float.dtype, np.asarray(want_float).tobytes()))
+        x = self.integers((6, 40))
+        for view in (x[:, ::3], x[::-1], np.asfortranarray(x), self.integers((900, 300))[:, ::2]):
+            tensor = numerical.asarray(np.ascontiguousarray(view))
+            for op, f in functions.items():
+                with self.subTest(strides=view.strides, op=op):
+                    self.assert_same_bits(f(view, view), f(tensor, tensor))
+                    self.assert_same_bits(f(view, 3), f(tensor, 3))
+            with self.subTest(strides=view.strides, relation="<"):
+                self.assertEqual(np.asarray(numerical.less(view, 0)).tobytes(), np.asarray(numerical.less(tensor, 0)).tobytes())
+                mask = np.asarray(numerical.less(tensor, 0))
+                self.assertEqual(np.asarray(numerical.where(mask, view, 0)).tobytes(), np.asarray(numerical.where(mask, tensor, 0)).tobytes())
+        narrow = x.astype(np.int32)
+        for op in "+-*/":
+            self.assertIs(borrowed(op, narrow, narrow), NotImplemented)
+            self.assert_same_bits(functions[op](narrow, narrow), functions[op](numerical.asarray(narrow), numerical.asarray(narrow)))
+        self.assertIs(borrowed("+", x, x.astype(np.float64)), NotImplemented)
+
     def test_a_transposed_matrix_times_a_vector_gives_its_copys_bits(self):
         # A column-major matrix (a transpose) times a vector, read where it lies: the product of its C-ordered copy,
         # byte for byte, in the four dtypes, about the kernels' partial sums, a complex row's slots and the blocks of

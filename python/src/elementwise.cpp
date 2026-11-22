@@ -2927,6 +2927,44 @@ PyObject* module_borrowed_unary(PyObject* /*self*/, PyObject* args)
 namespace {
 
 
+// A Python int (not a bool) as the operators take one beside an int64 tensor (asarray(number, "int64")'s element), into
+// `value`; false for anything else, or an int no int64 holds, no error set: the converting path then answers it (a
+// float promoted to float64, an int past int64 refused or compared as NumPy 2 compares it).
+bool weak_integer(PyObject* obj, std::int64_t& value)
+{
+    if (PyLong_CheckExact(obj) == 0) {
+        return false;
+    }
+    int             overflow {0};
+    const long long read {PyLong_AsLongLongAndOverflow(obj, &overflow)};
+    if (overflow != 0 || PyErr_Occurred() != nullptr) {
+        PyErr_Clear();
+        return false;
+    }
+    value = read;
+    return true;
+}
+
+// A weak number as an element of T: the int64 weak_integer read for an integer T, the double weak_number read otherwise.
+template <typename T>
+T weak_element(double value, std::int64_t integer)
+{
+    if constexpr (std::is_integral_v<T>) {
+        return static_cast<T>(integer);
+    }
+    else {
+        return static_cast<T>(value);
+    }
+}
+
+// Whether the weak numbers beside an operand of `dtype` are ones it takes: for int64, Python ints it holds (into
+// `x_integer`, `y_integer`); any weak_number for the others.
+bool weak_beside(std::size_t dtype, PyObject* x, bool x_number, std::int64_t& x_integer, PyObject* y, bool y_number,
+                 std::int64_t& y_integer)
+{
+    return dtype != int_index || ((!x_number || weak_integer(x, x_integer)) && (!y_number || weak_integer(y, y_integer)));
+}
+
 // A borrowed operand's elements, or a weak number's, and their shape: the number one element of no axis.
 template <typename T>
 struct binary_operand
@@ -2966,6 +3004,10 @@ any_tensor borrowed_arithmetic(char op, const binary_operand<T>& x, const binary
             return any_tensor {d::broadcast_rows(x.data, x.shape, y.data, y.shape,
                                                  [fused](const T& p, const T& q) { return d::numpy_divide(p, q, fused); })};
         }
+        else if constexpr (std::is_integral_v<T>) { // a true quotient in float64, as binary_on's
+            return any_tensor {d::broadcast_rows(x.data, x.shape, y.data, y.shape,
+                                                 [](T p, T q) { return static_cast<double>(p) / static_cast<double>(q); })};
+        }
         else {
             return any_tensor {d::broadcast_rows(x.data, x.shape, y.data, y.shape, std::divides<T> {})};
         }
@@ -2991,7 +3033,7 @@ bool borrow_pair(PyObject* x, PyObject* y, bool x_number, bool y_number, borrowe
     const auto borrow = [&](bool columns) {
         out.x.emplace();
         out.y.emplace();
-        return (x_number || borrow_operand(x, *out.x, columns)) && (y_number || borrow_operand(y, *out.y, columns));
+        return (x_number || borrow_operand(x, *out.x, columns, false, true)) && (y_number || borrow_operand(y, *out.y, columns, false, true));
     };
     if (borrow(true)) {
         const bool x_columns {!x_number && out.x->transposed};
@@ -3014,7 +3056,8 @@ bool borrow_pair(PyObject* x, PyObject* y, bool x_number, bool y_number, borrowe
 
 // _borrowed_binary(op, x, y) -> Tensor or NotImplemented: x op y for op one of + - * /, each operand a Tensor or a NumPy
 // array read where it lies (borrow_operand), or one of them a Python float or int (weak: of the other's dtype), the two
-// of one float or complex dtype; by the functions _binary applies to Tensors, so its answer to the bit and its errors.
+// of one float or complex dtype or int64 (beside which a weak number is an int it holds: weak_integer; wrapped, the
+// quotient in float64); by the functions _binary applies to Tensors, so its answer to the bit and its errors.
 // NotImplemented for any other op or operand, or two dtypes, which the converting path then promotes. A NumPy array was
 // copied into a Tensor first: 10^5 doubles added, M1 Pro, 93 µs where two Tensors take 25.
 PyObject* module_borrowed_binary(PyObject* /*self*/, PyObject* args)
@@ -3040,6 +3083,11 @@ PyObject* module_borrowed_binary(PyObject* /*self*/, PyObject* args)
     const borrowed_operand&              a {*pair.x};
     const borrowed_operand&              b {*pair.y};
     const std::size_t                    dtype {x_number ? b.dtype : a.dtype};
+    std::int64_t                         x_integer {0};
+    std::int64_t                         y_integer {0};
+    if (!weak_beside(dtype, x, x_number, x_integer, y, y_number, y_integer)) {
+        return Py_NewRef(Py_NotImplemented);
+    }
     const numerical::detail::numpy_loops loops {numpy_loops_beside()}; // read while the GIL is held
     const std::vector<std::size_t>       no_axes;
     const std::vector<std::size_t>&      x_shape {x_number ? no_axes : a.shape};
@@ -3047,8 +3095,8 @@ PyObject* module_borrowed_binary(PyObject* /*self*/, PyObject* args)
     try {
         std::optional<any_tensor> result;
         const auto                apply = [&]<typename T>(std::type_identity<T>) {
-            const T                 x_scalar {static_cast<T>(x_value)}; // asarray(number, dtype)'s element
-            const T                 y_scalar {static_cast<T>(y_value)};
+            const T                 x_scalar {weak_element<T>(x_value, x_integer)}; // asarray(number, dtype)'s element
+            const T                 y_scalar {weak_element<T>(y_value, y_integer)};
             const binary_operand<T> left {x_number ? &x_scalar : static_cast<const T*>(a.data), x_shape};
             const binary_operand<T> right {y_number ? &y_scalar : static_cast<const T*>(b.data), y_shape};
             const sb::scoped_gil_release unlocked {releases_gil(std::max(elements_of(left), elements_of(right)))};
@@ -3062,6 +3110,7 @@ PyObject* module_borrowed_binary(PyObject* /*self*/, PyObject* args)
         case 0: apply(std::type_identity<double> {}); break;
         case 1: apply(std::type_identity<std::complex<double>> {}); break;
         case 2: apply(std::type_identity<float> {}); break;
+        case int_index: apply(std::type_identity<std::int64_t> {}); break;
         default: apply(std::type_identity<std::complex<float>> {}); break;
         }
         return wrap(std::move(*result));
@@ -3127,7 +3176,8 @@ bool borrow_condition(PyObject* obj, borrowed_condition& out)
 
 // _borrowed_where(condition, x, y) -> Tensor or NotImplemented: where of a bool Tensor or C-contiguous NumPy bool array
 // and two operands, each a Tensor or a NumPy array read where it lies (borrow_operand) or one of them a Python float or
-// int (weak: of the other's dtype), of one float or complex dtype; each element chosen as _where chooses it.
+// int (weak: of the other's dtype), of one float or complex dtype or int64 (beside which a weak number is an int it
+// holds: weak_integer); each element chosen as _where chooses it.
 // NotImplemented for any other operand, which the converting path then reads. The arrays were copied into Tensors first:
 // 10^5 doubles, M1 Pro, 252 µs where NumPy takes 76.
 PyObject* module_borrowed_where(PyObject* /*self*/, PyObject* args)
@@ -3145,17 +3195,22 @@ PyObject* module_borrowed_where(PyObject* /*self*/, PyObject* args)
     const bool         y_number {!x_number && weak_number(y, y_value)};
     borrowed_operand   a;
     borrowed_operand   b;
-    if (!borrow_condition(c_obj, c) || (!x_number && !borrow_operand(x, a)) || (!y_number && !borrow_operand(y, b))
-        || (!x_number && !y_number && a.dtype != b.dtype)) {
+    if (!borrow_condition(c_obj, c) || (!x_number && !borrow_operand(x, a, false, false, true))
+        || (!y_number && !borrow_operand(y, b, false, false, true)) || (!x_number && !y_number && a.dtype != b.dtype)) {
         return Py_NewRef(Py_NotImplemented);
     }
     const std::size_t              dtype {x_number ? b.dtype : a.dtype};
+    std::int64_t                   x_integer {0};
+    std::int64_t                   y_integer {0};
+    if (!weak_beside(dtype, x, x_number, x_integer, y, y_number, y_integer)) {
+        return Py_NewRef(Py_NotImplemented);
+    }
     const std::vector<std::size_t> no_axes;
     try {
         std::optional<any_tensor> result;
         const auto                choose = [&]<typename T>(std::type_identity<T>) {
-            const T                         x_scalar {static_cast<T>(x_value)}; // asarray(number, dtype)'s element
-            const T                         y_scalar {static_cast<T>(y_value)};
+            const T                         x_scalar {weak_element<T>(x_value, x_integer)}; // asarray(number, dtype)'s element
+            const T                         y_scalar {weak_element<T>(y_value, y_integer)};
             const T* const                  u {x_number ? &x_scalar : static_cast<const T*>(a.data)};
             const T* const                  v {y_number ? &y_scalar : static_cast<const T*>(b.data)};
             const std::vector<std::size_t>& x_shape {x_number ? no_axes : a.shape};
@@ -3176,6 +3231,7 @@ PyObject* module_borrowed_where(PyObject* /*self*/, PyObject* args)
         case 0: choose(std::type_identity<double> {}); break;
         case 1: choose(std::type_identity<std::complex<double>> {}); break;
         case 2: choose(std::type_identity<float> {}); break;
+        case int_index: choose(std::type_identity<std::int64_t> {}); break;
         default: choose(std::type_identity<std::complex<float>> {}); break;
         }
         return wrap(std::move(*result));
@@ -3393,7 +3449,8 @@ PyObject* module_gather_index(PyObject* /*self*/, PyObject* args)
 
 // _borrowed_compare(op, x, y) -> bool Tensor or NotImplemented: x op y for op one of < <= == != > >=, each operand a
 // Tensor or a NumPy array read where they lie (borrow_operand), or one of them a Python float or int (weak: of the
-// other's dtype), the two of one float or complex dtype (a complex one compared by == and != alone); by the relations
+// other's dtype), the two of one float or complex dtype (a complex one compared by == and != alone) or int64 (beside
+// which a weak number is an int it holds: weak_integer); by the relations
 // _compare applies, through broadcast_rows, so its answer and its errors. NotImplemented for anything else, which the
 // converting path then takes. A NumPy array was copied into a Tensor first: greater of a 9 × 9 array and 0, M1 Pro,
 // 1.4 µs where NumPy takes 0.5.
@@ -3422,7 +3479,10 @@ PyObject* module_borrowed_compare(PyObject* /*self*/, PyObject* args)
     const borrowed_operand& a {*pair.x};
     const borrowed_operand& b {*pair.y};
     const std::size_t       dtype {x_number ? b.dtype : a.dtype};
-    if ((dtype == 1 || dtype == 3) && which != 2 && which != 3) { // no order: the converting path refuses it
+    std::int64_t            x_integer {0};
+    std::int64_t            y_integer {0};
+    if (((dtype == 1 || dtype == 3) && which != 2 && which != 3) // no order: the converting path refuses it
+        || !weak_beside(dtype, x, x_number, x_integer, y, y_number, y_integer)) {
         return Py_NewRef(Py_NotImplemented);
     }
     const std::vector<std::size_t> no_axes;
@@ -3430,8 +3490,8 @@ PyObject* module_borrowed_compare(PyObject* /*self*/, PyObject* args)
         std::optional<bool_tensor> result;
         const auto                 compare = [&]<typename T>(std::type_identity<T>) {
             namespace d = numerical::detail;
-            const T                         x_scalar {static_cast<T>(x_value)}; // asarray(number, dtype)'s element
-            const T                         y_scalar {static_cast<T>(y_value)};
+            const T                         x_scalar {weak_element<T>(x_value, x_integer)}; // asarray(number, dtype)'s element
+            const T                         y_scalar {weak_element<T>(y_value, y_integer)};
             const T* const                  u {x_number ? &x_scalar : static_cast<const T*>(a.data)};
             const T* const                  v {y_number ? &y_scalar : static_cast<const T*>(b.data)};
             const std::vector<std::size_t>& x_shape {x_number ? no_axes : a.shape};
@@ -3460,6 +3520,7 @@ PyObject* module_borrowed_compare(PyObject* /*self*/, PyObject* args)
         case 0: compare(std::type_identity<double> {}); break;
         case 1: compare(std::type_identity<std::complex<double>> {}); break;
         case 2: compare(std::type_identity<float> {}); break;
+        case int_index: compare(std::type_identity<std::int64_t> {}); break;
         default: compare(std::type_identity<std::complex<float>> {}); break;
         }
         if (pair.columns) { // the elements as the operands lie: transposed back to their shape

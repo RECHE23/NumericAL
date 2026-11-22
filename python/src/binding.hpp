@@ -3527,6 +3527,7 @@ inline bool gather_operand(const array_struct& view, int dtype, borrowed_operand
     case 0: gather_as(std::type_identity<double> {}); break;
     case 1: gather_as(std::type_identity<std::complex<double>> {}); break;
     case 2: gather_as(std::type_identity<float> {}); break;
+    case static_cast<int>(int_index): gather_as(std::type_identity<std::int64_t> {}); break;
     default: gather_as(std::type_identity<std::complex<float>> {}); break;
     }
     out.data = out.gathered.data();
@@ -3539,12 +3540,13 @@ inline bool gather_operand(const array_struct& view, int dtype, borrowed_operand
 // two or more elements together but the rows farther apart (every other row of a larger one) is read too, `out.ld`
 // their distance. A small strided array (up to gathered_most elements, aligned, in this machine's byte order) is
 // copied in C order instead, as the converting path would copy it, without the calls around it. `out.ld` is a
-// matrix's distance between its rows (its columns, column-major).
-inline bool borrow_operand(PyObject* obj, borrowed_operand& out, bool columns = false, bool rows_apart = false)
+// matrix's distance between its rows (its columns, column-major). With `integers`, an int64 Tensor or NumPy array is
+// read too (out.dtype int_index), for a caller that dispatches on it: the others take a dtype past 3 for complex64.
+inline bool borrow_operand(PyObject* obj, borrowed_operand& out, bool columns = false, bool rows_apart = false, bool integers = false)
 {
     if (PyObject_TypeCheck(obj, reinterpret_cast<PyTypeObject*>(sb::class_type<any_tensor>())) != 0) {
         const any_tensor* v {reinterpret_cast<sb::wrapper<any_tensor>*>(obj)->held};
-        if (v == nullptr || is_bool(*v) || is_int(*v)) { // a bool or int64 one: the converting path refuses it
+        if (v == nullptr || is_bool(*v) || (is_int(*v) && !integers)) { // a bool one, or an int64 one unasked: the converting path's
             return false;
         }
         out.owner = Py_NewRef(obj);
@@ -3599,7 +3601,8 @@ inline bool borrow_operand(PyObject* obj, borrowed_operand& out, bool columns = 
     }
     const char kind {usable ? view->typekind : '\0'};
     const int  size {usable ? view->itemsize : 0};
-    const int  dtype {kind == 'f' && size == 8 ? 0 : kind == 'c' && size == 16 ? 1 : kind == 'f' && size == 4 ? 2 : kind == 'c' && size == 8 ? 3 : -1};
+    const int  dtype {kind == 'f' && size == 8 ? 0 : kind == 'c' && size == 16 ? 1 : kind == 'f' && size == 4 ? 2 : kind == 'c' && size == 8 ? 3
+                      : integers && kind == 'i' && size == 8 ? static_cast<int>(int_index) : -1};
     if (dtype < 0 || (gatherable && !gather_operand(*view, dtype, out))) {
         Py_DECREF(capsule);
         return false;
