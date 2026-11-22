@@ -15,6 +15,8 @@ A change that can break code is listed under **Breaking** and held for a month's
   added 0.71 → 0.35 µs (NumPy 0.27).
 - **`clip` of a float Tensor between two Python numbers** reads them in C, as `asarray` would round them to its
   dtype: 75 doubles 2.95 → 0.45 µs (NumPy 1.34). The same answers and errors.
+- **`take` of NumPy integer indices along an axis** reads them where they lie, without their Tensor: 7 indices along
+  the second axis of a 5 × 51 matrix 1.66 → 0.98 µs (NumPy 0.75).
 - **`quantile`, `percentile` and `median` select by a partition without branches**, every position a call asks at
   once (the parts around each pivot holding none left alone), the NaNs set apart first, where `std::nth_element` at
   each position mispredicted a branch on half the elements: M1 Pro, 10⁵ doubles, one quantile 1.75 → 0.32 ms (NumPy

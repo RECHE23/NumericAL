@@ -1120,8 +1120,71 @@ PyObject* module_take_along_axis(PyObject* /*self*/, PyObject* args)
     }
 }
 
-// _take_indices(a, indices, axis, mode) -> Tensor: numerical::take, an index outside the axis an IndexError in
-// NumPy's words.
+namespace {
+
+// An index's integers read where they lie: an int64 Tensor's in C order, or a C-contiguous NumPy array of 4- or 8-byte
+// signed integers. `owner` (a new reference: the Tensor, or the capsule, which holds the array) keeps them alive.
+struct borrowed_indices
+{
+    PyObject*                owner {nullptr};
+    const void*              data {nullptr};
+    int                      bytes {8}; // each integer's size
+    std::vector<std::size_t> shape;
+
+    borrowed_indices() = default;
+    borrowed_indices(const borrowed_indices&) = delete;
+    borrowed_indices& operator=(const borrowed_indices&) = delete;
+    ~borrowed_indices() { Py_XDECREF(owner); }
+
+    [[nodiscard]] std::int64_t at(std::size_t i) const noexcept
+    {
+        return bytes == 8 ? static_cast<const std::int64_t*>(data)[i] : static_cast<const std::int32_t*>(data)[i];
+    }
+};
+
+// Whether `obj` is an int64 Tensor or such a NumPy array, read into `out`; false, no error set, otherwise.
+bool borrow_indices(PyObject* obj, borrowed_indices& out)
+{
+    if (PyObject_TypeCheck(obj, reinterpret_cast<PyTypeObject*>(sb::class_type<any_tensor>())) != 0) {
+        const any_tensor* v {reinterpret_cast<sb::wrapper<any_tensor>*>(obj)->held};
+        if (v == nullptr || !is_int(*v)) {
+            return false;
+        }
+        out.owner = Py_NewRef(obj);
+        out.data  = data_of(*v);
+        out.shape = shape_of(*v);
+        return true;
+    }
+    PyObject* capsule = PyObject_GetAttr(obj, interned_name<array_struct_name>()); // new ref
+    if (capsule == nullptr) {
+        PyErr_Clear();
+        return false;
+    }
+    const auto* view {static_cast<const array_struct*>(PyCapsule_GetPointer(capsule, nullptr))};
+    if (view == nullptr) {
+        PyErr_Clear();
+    }
+    constexpr int needed {array_c_contiguous | array_aligned | array_not_swapped};
+    if (view == nullptr || view->two != 2 || view->data == nullptr || view->typekind != 'i' || (view->itemsize != 8 && view->itemsize != 4)
+        || (view->flags & needed) != needed) {
+        Py_DECREF(capsule);
+        return false;
+    }
+    out.owner = capsule;
+    out.data  = view->data;
+    out.bytes = view->itemsize;
+    for (int axis = 0; axis < view->nd; ++axis) {
+        out.shape.push_back(static_cast<std::size_t>(view->shape[axis]));
+    }
+    return true;
+}
+
+} // namespace
+
+// _take_indices(a, indices, axis, mode) -> Tensor or NotImplemented: numerical::take, an index outside the axis an
+// IndexError in NumPy's words; the indices an int64 Tensor, or a NumPy array of 4- or 8-byte integers read where it
+// lies (borrow_indices), NotImplemented for any other array, which take converts. Its conversion into a Tensor took
+// half of a take of 7 indices along an axis (1.66 µs, NumPy 0.79).
 PyObject* module_take_indices(PyObject* /*self*/, PyObject* args)
 {
     PyObject*  x    = nullptr;
@@ -1132,11 +1195,30 @@ PyObject* module_take_indices(PyObject* /*self*/, PyObject* args)
         return nullptr;
     }
     const any_tensor* a = as_tensor(x);
-    const any_tensor* b = a == nullptr ? nullptr : as_tensor(y);
-    if (b == nullptr) {
+    if (a == nullptr) {
         return nullptr;
     }
-    const auto* indices = std::get_if<int_tensor>(b);
+    std::optional<int_tensor> read; // a NumPy array's indices, copied: a few, beside the gather
+    const int_tensor*         indices {nullptr};
+    if (PyObject_TypeCheck(y, reinterpret_cast<PyTypeObject*>(sb::class_type<any_tensor>())) != 0) {
+        const any_tensor* b {as_tensor(y)};
+        if (b == nullptr) {
+            return nullptr;
+        }
+        indices = std::get_if<int_tensor>(b);
+    }
+    else {
+        borrowed_indices borrowed;
+        if (!borrow_indices(y, borrowed)) {
+            return Py_NewRef(Py_NotImplemented);
+        }
+        numerical::buffer<std::int64_t> values(numerical::detail::element_count(borrowed.shape.begin(), borrowed.shape.end()));
+        for (std::size_t i {0}; i < values.size(); ++i) {
+            values[i] = borrowed.at(i);
+        }
+        read.emplace(borrowed.shape, std::move(values));
+        indices = &*read;
+    }
     if (indices == nullptr || axis < 0 || mode < 0 || mode > 2) {
         PyErr_SetString(PyExc_ValueError, "_take_indices: int64 indices, a non-negative axis and a mode of 0, 1 or 2");
         return nullptr;
@@ -3159,67 +3241,6 @@ PyObject* module_fast_compare(PyObject* self, PyObject* args)
     }
 }
 
-
-namespace {
-
-// An index's integers read where they lie: an int64 Tensor's in C order, or a C-contiguous NumPy array of 4- or 8-byte
-// signed integers. `owner` (a new reference: the Tensor, or the capsule, which holds the array) keeps them alive.
-struct borrowed_indices
-{
-    PyObject*                owner {nullptr};
-    const void*              data {nullptr};
-    int                      bytes {8}; // each integer's size
-    std::vector<std::size_t> shape;
-
-    borrowed_indices() = default;
-    borrowed_indices(const borrowed_indices&) = delete;
-    borrowed_indices& operator=(const borrowed_indices&) = delete;
-    ~borrowed_indices() { Py_XDECREF(owner); }
-
-    [[nodiscard]] std::int64_t at(std::size_t i) const noexcept
-    {
-        return bytes == 8 ? static_cast<const std::int64_t*>(data)[i] : static_cast<const std::int32_t*>(data)[i];
-    }
-};
-
-// Whether `obj` is an int64 Tensor or such a NumPy array, read into `out`; false, no error set, otherwise.
-bool borrow_indices(PyObject* obj, borrowed_indices& out)
-{
-    if (PyObject_TypeCheck(obj, reinterpret_cast<PyTypeObject*>(sb::class_type<any_tensor>())) != 0) {
-        const any_tensor* v {reinterpret_cast<sb::wrapper<any_tensor>*>(obj)->held};
-        if (v == nullptr || !is_int(*v)) {
-            return false;
-        }
-        out.owner = Py_NewRef(obj);
-        out.data  = data_of(*v);
-        out.shape = shape_of(*v);
-        return true;
-    }
-    PyObject* capsule = PyObject_GetAttr(obj, interned_name<array_struct_name>()); // new ref
-    if (capsule == nullptr) {
-        PyErr_Clear();
-        return false;
-    }
-    const auto* view {static_cast<const array_struct*>(PyCapsule_GetPointer(capsule, nullptr))};
-    if (view == nullptr) {
-        PyErr_Clear();
-    }
-    constexpr int needed {array_c_contiguous | array_aligned | array_not_swapped};
-    if (view == nullptr || view->two != 2 || view->data == nullptr || view->typekind != 'i' || (view->itemsize != 8 && view->itemsize != 4)
-        || (view->flags & needed) != needed) {
-        Py_DECREF(capsule);
-        return false;
-    }
-    out.owner = capsule;
-    out.data  = view->data;
-    out.bytes = view->itemsize;
-    for (int axis = 0; axis < view->nd; ++axis) {
-        out.shape.push_back(static_cast<std::size_t>(view->shape[axis]));
-    }
-    return true;
-}
-
-} // namespace
 
 // _gather_index(t, index, flat=False) -> Tensor or NotImplemented: t[index] (with `flat`, of t's elements in C order, as
 // take(t, index) reads them) for the two advanced indexes most taken, read where they lie

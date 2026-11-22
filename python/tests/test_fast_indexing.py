@@ -70,6 +70,33 @@ class FastIndexing(unittest.TestCase):
         self.assert_like_numpy(numerical.take(tensor, [3, 0], axis=0), np.take(a, [3, 0], axis=0))
         self.assert_like_numpy(numerical.take(tensor.T, [5, 1]), np.take(a.T, [5, 1]))
 
+    def test_take_of_numpy_indices_along_any_axis_reads_them_where_they_lie(self):
+        # take of a NumPy array of 4- or 8-byte integers along every axis, in every mode (negative indices, out of the
+        # axis, of rank 0 to 2, empty): the answer and errors of the same indices as an int64 Tensor; other index arrays
+        # (strided, 2-byte, unsigned) through the conversion as before.
+        x = numerical.asarray(self.rng.standard_normal((4, 6, 5)))
+        for dtype in (np.int64, np.int32):
+            for indices in ([0, -1, 3], [[1, 2], [-2, 0]], [7, -9, 2], 2, [], [[]]):
+                index = np.array(indices, dtype)
+                for axis in (0, 1, 2, -1):
+                    for mode in ("raise", "wrap", "clip"):
+                        with self.subTest(dtype=np.dtype(dtype).name, indices=indices, axis=axis, mode=mode):
+                            try:
+                                want = numerical.take(x, numerical.asarray(index, "int64"), axis=axis, mode=mode)
+                            except Exception as caught:  # noqa: BLE001 - the same error either way
+                                with self.assertRaises(type(caught)) as raised:
+                                    numerical.take(x, index, axis=axis, mode=mode)
+                                self.assertEqual(str(raised.exception), str(caught))
+                                continue
+                            got = numerical.take(x, index, axis=axis, mode=mode)
+                            self.assertEqual((got.dtype, got.shape), (want.dtype, want.shape))
+                            self.assertEqual(np.asarray(got).tobytes(), np.asarray(want).tobytes())
+        for index in (np.arange(6)[::2], np.array([1, 2], np.int16), np.array([1, 2], np.uint32)):
+            with self.subTest(index=index.dtype.name, contiguous=index.flags.c_contiguous):
+                self.assertIs(numerical._numerical._take_indices(x, index, 1, 0), NotImplemented)
+                want = numerical.take(x, numerical.asarray(index, "int64"), axis=1)
+                self.assertEqual(np.asarray(numerical.take(x, index, axis=1)).tobytes(), np.asarray(want).tobytes())
+
     def test_other_keys_and_errors_answer_as_before(self):
         # A mask of another shape, an index out of the axis, a float array, a rank-0 index and a key of several parts
         # go the general path: its answers, and NumPy's errors in its words.

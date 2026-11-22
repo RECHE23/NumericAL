@@ -7149,6 +7149,10 @@ def take(a, indices, axis=None, mode="raise"):
     if isinstance(indices, _numbers.Integral):
         indices = reshape(asarray([_operator.index(indices)], "int64"), ())
     else:
+        if type(indices).__name__ == "ndarray" and indices.dtype.kind == "i":  # read where it lies, in C
+            taken = _numerical._take_indices(a, indices, axis, _TAKE_MODES.index(mode))
+            if taken is not NotImplemented:
+                return taken
         indices = _index_tensor(indices, "take")
     # NumPy's checks: an index outside the axis wherever a slice of the other axes stands; any index from an empty axis
     # where the result has elements, or under "wrap" (which loops forever there, numpy#11677)
