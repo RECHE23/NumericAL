@@ -3600,9 +3600,7 @@ inline bool borrow_operand(PyObject* obj, borrowed_operand& out, bool columns = 
     out.dtype      = static_cast<std::size_t>(dtype);
     out.data       = gatherable ? out.data : view->data;
     out.transposed = columns_usable;
-    for (int axis = 0; axis < view->nd; ++axis) {
-        out.shape.push_back(static_cast<std::size_t>(view->shape[axis]));
-    }
+    out.shape.assign(view->shape, view->shape + view->nd); // NOLINT(cppcoreguidelines-pro-bounds-pointer-arithmetic): view->nd extents
     out.ld = view->nd != 2 ? 0
              : apart_usable ? static_cast<std::size_t>(view->strides[0] / view->itemsize)
              : columns_usable ? out.shape[0]

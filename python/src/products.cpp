@@ -733,6 +733,12 @@ PyObject* module_stack_last(PyObject* /*self*/, PyObject* args)
 
 namespace {
 
+// The longest run of a row (a part's elements in one row of a join) copied part by part: when every part's is shorter,
+// joined_rows copies each part in turn through a block of joined_block_rows rows (at most 8 x 1024 elements a part,
+// 64 KiB of doubles: in the cache while the other parts write the block's rows).
+constexpr std::size_t joined_short_run {8};
+constexpr std::size_t joined_block_rows {1024};
+
 // One part of a join: its elements in C order, and its extent along the axis.
 template <typename T>
 struct join_part
@@ -751,7 +757,37 @@ numerical::tensor<T> joined_rows(const std::vector<join_part<T>>& parts, std::ve
 {
     shape[along] = total;
     numerical::buffer<T> out(numerical::detail::checked_mul(numerical::detail::checked_mul(outer, total), inner));
-    T*                   at {out.data()};
+    const std::size_t    row {total * inner};
+    // Every part's run of a row shorter than joined_short_run (a join along the last axis of narrow parts): the rows
+    // taken by blocks of joined_block_rows, and in each block each part copied in turn, its runs `row` apart, where the
+    // rows' loop paid its turn through the parts for a few elements (859 x 1 twice along the last axis: 5.0 us, NumPy
+    // 1.3); a block's rows stay in the cache while the parts write them.
+    if (std::ranges::all_of(parts, [&](const join_part<T>& part) { return part.extent * inner < joined_short_run; })) {
+        for (std::size_t first = 0; first < outer; first += joined_block_rows) {
+            const std::size_t rows {std::min(joined_block_rows, outer - first)};
+            std::size_t       offset {first * row};
+            for (const join_part<T>& part : parts) {
+                const std::size_t run {part.extent * inner};
+                T* const          to {out.data() + offset};
+                const T* const    from {part.data + (first * run)};
+                if (run == 1) {
+                    for (std::size_t o = 0; o < rows; ++o) {
+                        to[o * row] = from[o];
+                    }
+                }
+                else {
+                    for (std::size_t o = 0; o < rows; ++o) {
+                        for (std::size_t k = 0; k < run; ++k) {
+                            to[(o * row) + k] = from[(o * run) + k];
+                        }
+                    }
+                }
+                offset += run;
+            }
+        }
+        return numerical::tensor<T> {std::move(shape), std::move(out)};
+    }
+    T* at {out.data()};
     for (std::size_t o = 0; o < outer; ++o) {
         for (const join_part<T>& part : parts) {
             const std::size_t run {part.extent * inner};
@@ -771,32 +807,43 @@ numerical::tensor<T> joined_rows(const std::vector<join_part<T>>& parts, std::ve
 }
 
 // A join's parts read where they lie: each one's elements, shape and dtype (the any_tensor index), the borrowed arrays
-// held while they are read.
+// held while they are read (`held`, one allocation for all of them: a few small allocations a part were most of a
+// join of two small arrays).
 struct join_operands
 {
-    std::vector<const void*>                       data;
-    std::vector<std::vector<std::size_t>>          shapes;
-    std::vector<std::size_t>                       dtypes;
-    std::vector<std::unique_ptr<borrowed_operand>> held;
+    std::vector<const void*>              data;
+    std::vector<const std::vector<std::size_t>*> shapes; // the Tensors' own, or `held`'s
+    std::vector<std::size_t>                     dtypes;
+    std::unique_ptr<borrowed_operand[]>          held; // NOLINT(cppcoreguidelines-avoid-c-arrays,modernize-avoid-c-arrays): borrowed_operand neither copies nor moves
+
+    explicit join_operands(std::size_t count)
+    {
+        data.reserve(count);
+        shapes.reserve(count);
+        dtypes.reserve(count);
+    }
 };
 
 // The parts `along` an axis of `shapes[0]`'s rank joined, in the dtype of every part (the caller checked it); the
-// shapes checked by the caller to differ along it alone.
-PyObject* join(const join_operands& operands, std::size_t along)
+// shapes checked by the caller to differ along it alone. With `transpose`, the answer is the joined tensor's transpose
+// (tensor::transposed, a view).
+PyObject* join(const join_operands& operands, std::size_t along, bool transpose = false)
 {
-    const std::vector<std::size_t>& first {operands.shapes.front()};
+    const std::vector<std::size_t>& first {*operands.shapes.front()};
     std::size_t                     total {0};
-    for (const std::vector<std::size_t>& shape : operands.shapes) {
-        total += shape[along];
+    for (const std::vector<std::size_t>* shape : operands.shapes) {
+        total += (*shape)[along];
     }
     const std::size_t outer {numerical::detail::element_count(first.begin(), first.begin() + static_cast<std::ptrdiff_t>(along))};
     const std::size_t inner {numerical::detail::element_count(first.begin() + static_cast<std::ptrdiff_t>(along) + 1, first.end())};
     const auto        joined = [&]<typename T>(std::type_identity<T>) {
         std::vector<join_part<T>> parts;
+        parts.reserve(operands.data.size());
         for (std::size_t i = 0; i < operands.data.size(); ++i) {
-            parts.push_back({static_cast<const T*>(operands.data[i]), operands.shapes[i][along]});
+            parts.push_back({static_cast<const T*>(operands.data[i]), (*operands.shapes[i])[along]});
         }
-        return wrap(any_tensor {joined_rows(parts, first, along, outer, inner, total)});
+        numerical::tensor<T> answer {joined_rows(parts, first, along, outer, inner, total)};
+        return wrap(any_tensor {transpose ? answer.transposed() : std::move(answer)});
     };
     switch (operands.dtypes.front()) {
     case 0: return joined(std::type_identity<double> {});
@@ -809,10 +856,11 @@ PyObject* join(const join_operands& operands, std::size_t along)
 }
 
 // Whether every shape is of `first`'s rank and extents but along `along`.
-bool joinable(const std::vector<std::vector<std::size_t>>& shapes, std::size_t along)
+bool joinable(const std::vector<const std::vector<std::size_t>*>& shapes, std::size_t along)
 {
-    const std::vector<std::size_t>& first {shapes.front()};
-    return std::ranges::all_of(shapes, [&](const std::vector<std::size_t>& shape) {
+    const std::vector<std::size_t>& first {*shapes.front()};
+    return std::ranges::all_of(shapes, [&](const std::vector<std::size_t>* each) {
+        const std::vector<std::size_t>& shape {*each};
         if (shape.size() != first.size()) {
             return false;
         }
@@ -823,6 +871,38 @@ bool joinable(const std::vector<std::vector<std::size_t>>& shapes, std::size_t a
         }
         return true;
     });
+}
+
+// Whether `t` is a matrix's transpose lying where it lies: two axes longer than 1, its columns one after the other
+// (borrow_operand's columns).
+bool lies_in_columns(const any_tensor& t)
+{
+    return std::visit([](const auto& each) {
+        return each.rank() == 2 && each.shape()[0] >= 2 && each.shape()[1] >= 2 && !each.contiguous() && each.strides()[0] == 1
+            && each.strides()[1] == static_cast<std::ptrdiff_t>(each.shape()[0]);
+    }, t);
+}
+
+// A matrix `borrowed` in its columns (borrow_operand's columns: column-major, its columns `ld` apart) copied in C order
+// into `gathered`, `data` pointing there.
+void gather_rows(borrowed_operand& borrowed)
+{
+    const auto rows_of = [&]<typename T>(std::type_identity<T>) {
+        const auto                    size {static_cast<Py_ssize_t>(sizeof(T))};
+        const std::vector<Py_ssize_t> strides {size, static_cast<Py_ssize_t>(borrowed.ld) * size};
+        std::vector<std::byte>        rows(borrowed.shape[0] * borrowed.shape[1] * sizeof(T));
+        gather_typed<T>(static_cast<const unsigned char*>(borrowed.data), borrowed.shape, strides, reinterpret_cast<T*>(rows.data())); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): bytes from the allocator, aligned for any scalar
+        borrowed.gathered = std::move(rows);
+    };
+    switch (borrowed.dtype) {
+    case 0: rows_of(std::type_identity<double> {}); break;
+    case 1: rows_of(std::type_identity<std::complex<double>> {}); break;
+    case 2: rows_of(std::type_identity<float> {}); break;
+    default: rows_of(std::type_identity<std::complex<float>> {}); break;
+    }
+    borrowed.data       = borrowed.gathered.data();
+    borrowed.transposed = false;
+    borrowed.ld         = borrowed.shape[1];
 }
 
 } // namespace
@@ -843,7 +923,7 @@ PyObject* module_concatenate(PyObject* /*self*/, PyObject* args)
         }
         return nullptr;
     }
-    join_operands operands;
+    join_operands operands {static_cast<std::size_t>(count)};
     for (Py_ssize_t i = 0; i < count; ++i) {
         PyObject* item = PySequence_GetItem(seq, i); // new ref; the sequence keeps the tensor alive
         if (item == nullptr) {
@@ -855,10 +935,10 @@ PyObject* module_concatenate(PyObject* /*self*/, PyObject* args)
             return nullptr;
         }
         operands.data.push_back(data_of(*part));
-        operands.shapes.push_back(shape_of(*part));
+        operands.shapes.push_back(&shape_of(*part));
         operands.dtypes.push_back(part->index());
     }
-    const auto rank {static_cast<Py_ssize_t>(operands.shapes.front().size())};
+    const auto rank {static_cast<Py_ssize_t>(operands.shapes.front()->size())};
     if (axis < 0 || axis >= rank) {
         PyErr_SetString(PyExc_ValueError, "_concatenate: the axis is out of the tensors' rank");
         return nullptr;
@@ -882,6 +962,10 @@ PyObject* module_concatenate(PyObject* /*self*/, PyObject* args)
 // more), of one shape but along `axis` (negative counted from the end); NotImplemented for anything else (two dtypes,
 // an array not so read, a bad axis or shape), which concatenate then promotes, converts or refuses as before. A NumPy
 // array was copied into a Tensor first, and Python checked the parts: 2.5 µs for two 3 × 4 arrays, NumPy 0.5.
+// Matrices that all lie in their columns (Fortran order, a transpose: borrow_operand's columns, a Tensor's .T) are
+// their transposes joined along the other axis, the answer that join's transpose, a view (NumPy's answer is in
+// Fortran order too): their copy in C order was most of the join (two 38 × 68 transposed float32 matrices: 3.4 µs,
+// NumPy 1.4). Among parts in C order, those in columns are copied in C order.
 PyObject* module_concatenate_fast(PyObject* /*self*/, PyObject* args)
 {
     PyObject*  seq  = nullptr;
@@ -894,7 +978,9 @@ PyObject* module_concatenate_fast(PyObject* /*self*/, PyObject* args)
     }
     const Py_ssize_t count {PySequence_Size(seq)};
     auto* const      type {reinterpret_cast<PyTypeObject*>(sb::class_type<any_tensor>())};
-    join_operands    operands;
+    join_operands                  operands {static_cast<std::size_t>(count)};
+    std::vector<const any_tensor*> tensors(static_cast<std::size_t>(count)); // a Tensor part, or null for an array
+    std::size_t                    in_columns {0};
     for (Py_ssize_t i = 0; i < count; ++i) {
         PyObject* item {PyList_Check(seq) != 0 ? PyList_GetItem(seq, i) : PyTuple_GetItem(seq, i)}; // borrowed
         if (PyObject_TypeCheck(item, type) != 0) {
@@ -902,20 +988,27 @@ PyObject* module_concatenate_fast(PyObject* /*self*/, PyObject* args)
             if (part == nullptr) {
                 return Py_NewRef(Py_NotImplemented);
             }
-            operands.data.push_back(data_of(*part));
-            operands.shapes.push_back(shape_of(*part));
+            const bool columns {lies_in_columns(*part)};
+            in_columns += columns ? 1 : 0;
+            tensors[static_cast<std::size_t>(i)] = part;
+            operands.data.push_back(columns ? std::visit([](const auto& t) { return static_cast<const void*>(t.origin()); }, *part) : data_of(*part));
+            operands.shapes.push_back(&shape_of(*part));
             operands.dtypes.push_back(part->index());
             continue;
         }
-        auto& borrowed {operands.held.emplace_back(std::make_unique<borrowed_operand>())};
-        if (!borrow_operand(item, *borrowed)) {
+        if (operands.held == nullptr) { // the first array: a borrowed operand for it and every part after it
+            operands.held = std::make_unique<borrowed_operand[]>(static_cast<std::size_t>(count)); // NOLINT(cppcoreguidelines-avoid-c-arrays,modernize-avoid-c-arrays): as join_operands::held
+        }
+        borrowed_operand& borrowed {operands.held[static_cast<std::size_t>(i)]};
+        if (!borrow_operand(item, borrowed, true)) {
             return Py_NewRef(Py_NotImplemented);
         }
-        operands.data.push_back(borrowed->data);
-        operands.shapes.push_back(borrowed->shape);
-        operands.dtypes.push_back(borrowed->dtype);
+        in_columns += borrowed.transposed ? 1 : 0;
+        operands.data.push_back(borrowed.data);
+        operands.shapes.push_back(&borrowed.shape);
+        operands.dtypes.push_back(borrowed.dtype);
     }
-    const auto rank {static_cast<Py_ssize_t>(operands.shapes.front().size())};
+    const auto rank {static_cast<Py_ssize_t>(operands.shapes.front()->size())};
     if (rank == 0 || axis < -rank || axis >= rank) {
         return Py_NewRef(Py_NotImplemented);
     }
@@ -925,6 +1018,24 @@ PyObject* module_concatenate_fast(PyObject* /*self*/, PyObject* args)
         return Py_NewRef(Py_NotImplemented);
     }
     try {
+        if (in_columns == operands.data.size()) { // every part a matrix in its columns: their transposes in C order
+            std::vector<std::vector<std::size_t>> transposed_shapes;
+            transposed_shapes.reserve(operands.shapes.size());
+            for (std::size_t i = 0; i < operands.shapes.size(); ++i) {
+                const std::vector<std::size_t>& shape {*operands.shapes[i]};
+                operands.shapes[i] = &transposed_shapes.emplace_back(std::vector<std::size_t> {shape[1], shape[0]});
+            }
+            return join(operands, 1 - along, true);
+        }
+        for (std::size_t i = 0; in_columns != 0 && i < operands.data.size(); ++i) { // those in columns in C order
+            if (tensors[i] != nullptr && lies_in_columns(*tensors[i])) {
+                operands.data[i] = data_of(*tensors[i]);
+            }
+            else if (tensors[i] == nullptr && operands.held[i].transposed) {
+                gather_rows(operands.held[i]);
+                operands.data[i] = operands.held[i].data;
+            }
+        }
         return join(operands, along);
     }
     catch (...) {

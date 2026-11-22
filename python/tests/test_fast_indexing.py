@@ -152,6 +152,47 @@ class FastConcatenate(unittest.TestCase):
             tensor = numerical.asarray(values, "int64" if values.dtype.kind == "i" else None)
             self.assert_like_numpy(numerical.concatenate([tensor, tensor], axis=1), np.concatenate([values, values], axis=1))
 
+    def test_parts_in_columns_and_short_rows_join_as_numpys(self):
+        # Matrices in their columns (Fortran order, a Tensor's .T) joined as their transposes along the other axis,
+        # alone or among parts in C order (copied in C order then); parts of fewer than 8 elements a row (along the
+        # last axis) copied part by part, by blocks of 1024 rows: 2500 rows cross two.
+        def drawn(dtype, shape):
+            values = self.rng.standard_normal(shape) + (1j * self.rng.standard_normal(shape) if dtype in "FD" else 0)
+            if dtype == "?":
+                return values > 0
+            return (values * 9).astype(np.int64) if dtype == "l" else values.astype(dtype)
+
+        def laid(kind, values):
+            if kind == "F":
+                return np.asfortranarray(values)
+            if kind == "strided":
+                return np.repeat(values, 2, axis=0)[::2]
+            if kind == "tensor":
+                return numerical.asarray(values)
+            if kind == "tensor.T":
+                return numerical.asarray(np.ascontiguousarray(values.T)).T
+            return values
+
+        fast = numerical._numerical._concatenate_fast
+        for dtype in ("d", "f", "D", "F", "?", "l"):
+            for rows, columns, axis in ((38, 68, 0), (86, 5, -1), (5, 86, 1), (2500, 1, -1), (2500, 3, 1), (2, 2, 0),
+                                        (1, 7, 0), (7, 1, 1)):
+                for kinds in (("F", "F"), ("tensor.T", "tensor.T"), ("F", "tensor.T", "F"), ("F", "C"), ("C", "tensor.T"),
+                              ("strided", "F"), ("tensor", "tensor"), ("C", "C", "C", "C")):
+                    if dtype in "?l" and any(kind not in ("tensor", "tensor.T") for kind in kinds):
+                        continue  # bool and int64 arrays take the converting path
+                    shapes = [[rows, columns] for _ in kinds]
+                    for k, shape in enumerate(shapes):
+                        shape[axis % 2] = max(1, shape[axis % 2] - k)
+                    parts = [laid(kind, drawn(dtype, tuple(shape))) for kind, shape in zip(kinds, shapes)]
+                    want = np.concatenate([np.asarray(p) for p in parts], axis=axis)
+                    with self.subTest(dtype=dtype, shape=(rows, columns), axis=axis, kinds=kinds):
+                        got = fast(parts, axis)
+                        self.assertIsNot(got, NotImplemented)
+                        self.assertEqual(np.asarray(got).dtype, want.dtype)
+                        self.assert_like_numpy(got, want)
+                        self.assert_like_numpy(got | False if dtype == "?" else got + 0, want)  # the answer as an operand
+
     def test_other_calls_answer_as_before(self):
         fast = numerical._numerical._concatenate_fast
         a = self.rng.standard_normal((3, 4))

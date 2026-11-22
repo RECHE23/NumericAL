@@ -17,6 +17,11 @@ A change that can break code is listed under **Breaking** and held for a month's
   dtype: 75 doubles 2.95 → 0.45 µs (NumPy 1.34). The same answers and errors.
 - **`take` of NumPy integer indices along an axis** reads them where they lie, without their Tensor: 7 indices along
   the second axis of a 5 × 51 matrix 1.66 → 0.98 µs (NumPy 0.75).
+- **`concatenate` of matrices in Fortran order** (a transposed array, a Tensor's `.T`) joins their transposes along
+  the other axis and answers that join's transpose, a view, as NumPy answers in Fortran order, where it copied each in
+  C order first: two transposed 38 × 68 float32 matrices 3.4 → 1.3 µs (NumPy 1.4). **Along the last axis, parts of
+  fewer than 8 elements a row** are copied one after the other by blocks of rows, where each row took a turn through
+  the parts: two 859 × 1 Tensors 5.0 → 0.9 µs (NumPy 1.3). The same elements.
 - **`argsort` of lines shorter than 256 elements sorts their keys beside their indices**, where each comparison read
   two elements through their indices and asked for NaNs: 100 doubles 3.3 → 1.9 µs, 255 8.5 → 3.0 µs (NumPy's stable
   argsort 1.5 and 3.5). The same indices.
