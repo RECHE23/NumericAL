@@ -8,6 +8,14 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Changed
+
+- **`quantile`, `percentile` and `median` select by a partition without branches**, every position a call asks at
+  once (the parts around each pivot holding none left alone), the NaNs set apart first, where `std::nth_element` at
+  each position mispredicted a branch on half the elements: M1 Pro, 10⁵ doubles, one quantile 1.75 → 0.32 ms (NumPy
+  1.3), three 3.3 → 0.59 ms (NumPy 1.8), the median 0.36 ms (NumPy 1.1); 10⁶, three quantiles 5.6 ms (NumPy 21). The
+  same elements, the stable sort's.
+
 ## 2026.11.21 — 2026-11-22
 
 ### Changed

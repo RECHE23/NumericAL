@@ -2545,6 +2545,88 @@ TEST(select_along_last_as_the_stable_sort)
   EXPECT_THROWS((void)numerical::select_along_last(t, tensor<std::int64_t> {{1}, {-1}}), numerical::dimension_error);
 }
 
+namespace {
+  // Whether select_along_last of drawn lines of T, at drawn positions, gives the stable sort's bits: lines of 1 to 300
+  // elements of few values (zeros of either sign, NaNs of two payloads and signs, repeats), with no NaN, some and only
+  // NaNs, at 1 to 8 positions drawn among the edges (the first, the last that is no NaN, the first NaN, the last) and
+  // the rest, repeats included.
+  template <typename T>
+  bool selections_drawn_match_the_sort()
+  {
+    using bits = std::conditional_t<sizeof(T) == 8, std::uint64_t, std::uint32_t>;
+    const T                nan_a {std::bit_cast<T>(static_cast<bits>(sizeof(T) == 8 ? 0x7ff8000000000001ULL : 0x7fc00001U))};
+    const T                nan_b {std::bit_cast<T>(static_cast<bits>(sizeof(T) == 8 ? 0xfff8000000000002ULL : 0xffc00002U))};
+    const std::array<T, 8> values {T {-2}, T {-1}, static_cast<T>(-0.0), T {0}, T {1}, static_cast<T>(3.5), static_cast<T>(1e30),
+                                   static_cast<T>(-1e-30)};
+    std::uint64_t          state {12345};
+    const auto             draw {[&state](std::size_t bound) {
+                                   state = (state * 6364136223846793005ULL) + 1442695040888963407ULL;
+                                   return static_cast<std::size_t>((state >> 33U) % bound);
+                                 }};
+    bool every {true};
+    for (const std::size_t count : {std::size_t {1}, std::size_t {2}, std::size_t {61}, std::size_t {300}, std::size_t {2000}}) {
+      for (const std::size_t nans_in : {std::size_t {0}, std::size_t {5}, std::size_t {100}}) { // percent
+        for (int round {0}; round < 12; ++round) {
+          numerical::buffer<T> line(2 * count);
+          for (T& v : line) {
+            const T nan {draw(2) == 0 ? nan_a : nan_b};
+            v = draw(100) < nans_in ? nan : values[draw(values.size())];
+          }
+          const tensor<T>                  t      {{2, count}, std::move(line)};
+          const tensor<T>                  sorted {numerical::sort(t, 1)};
+          const auto                       first  {sorted.data().begin()};
+          const auto                       valid  {static_cast<std::size_t>(std::count_if(first, first + static_cast<std::ptrdiff_t>(count), [](T v) { return !std::isnan(v); }))};
+          const std::array<std::size_t, 4> edges  {0, valid == 0 ? 0 : valid - 1, std::min(valid, count - 1), count - 1};
+          std::vector<std::int64_t>        at(1 + draw(8));
+          for (std::int64_t& k : at) {
+            k = static_cast<std::int64_t>(draw(2) == 0 ? edges[draw(edges.size())] : draw(count));
+          }
+          const std::size_t m      {at.size()};
+          const tensor<T>   picked {numerical::select_along_last(t, tensor<std::int64_t> {{m}, numerical::buffer<std::int64_t>(at.begin(), at.end())})};
+          every = every && picked.shape() == (std::vector<std::size_t> {2, m});
+          for (std::size_t j {0}; every && j < 2 * m; ++j) {
+            const std::size_t k {static_cast<std::size_t>(at[j % m])};
+            every = std::bit_cast<bits>(picked.data()[j]) == std::bit_cast<bits>(sorted.data()[((j / m) * count) + k]);
+          }
+        }
+      }
+    }
+    return every;
+  }
+} // namespace
+
+// Drawn lines and positions, float and double: the stable sort's bits, NaNs and zeros among them.
+TEST(select_along_last_of_drawn_lines_as_the_stable_sort)
+{
+  EXPECT(selections_drawn_match_the_sort<double>());
+  EXPECT(selections_drawn_match_the_sort<float>());
+}
+
+// select_keys at every depth, its partitions' bound reached at once (std::nth_element key by key) or after one: the
+// sort's elements at the keys, for distinct values, repeats and one value alone, doubles and integers.
+TEST(select_keys_at_every_depth_as_the_sort)
+{
+  const auto selected_as_sorted {[]<typename T>(std::vector<T> line, std::size_t depth) {
+                                   std::vector<T> sorted                 {line};
+                                   std::sort(sorted.begin(), sorted.end());
+                                   const std::array<std::size_t, 5> keys {0, 3, 40, 41, line.size() - 1};
+                                   numerical::detail::select_keys(line.data(), 0, line.size(), keys.data(), keys.size(), depth);
+                                   return std::ranges::all_of(keys, [&](std::size_t k) { return line[k] == sorted[k]; });
+                                 }};
+  std::vector<double>       drawn(100);
+  std::vector<std::int64_t> repeats(100);
+  for (std::size_t i {0}; i < 100; ++i) {
+    drawn[i]   = static_cast<double>((i * 37) % 101) - 50.0;
+    repeats[i] = static_cast<std::int64_t>((i * 7) % 3);
+  }
+  bool every {true};
+  for (const std::size_t depth : {std::size_t {0}, std::size_t {1}, std::size_t {14}}) {
+    every = every && selected_as_sorted(drawn, depth) && selected_as_sorted(repeats, depth)
+            && selected_as_sorted(std::vector<double>(100, 2.5), depth);
+  }
+  EXPECT(every);
+}
+
 // Lines that are columns are walked in bands of 256, row after row: each line's sums, products and counts are those
 // of its elements in order, the bands' edges anywhere (a band of 256 and one of 44 here, under 2 outer slices).
 TEST(columns_fold_and_scan_in_bands_as_line_by_line)
