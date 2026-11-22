@@ -3262,4 +3262,55 @@ PyObject* module_isin_table(PyObject* /*self*/, PyObject* args)
         return set_cpp_error();
     }
 }
+
+// _isin_sorted(a, b, invert) -> bool Tensor or NotImplemented: whether each element of the Tensor `a` (in C order) equals
+// one of the Tensor `b`'s, the two of one dtype, float64, float32 or int64: b's elements sorted (its NaNs left out, as
+// no NaN equals one) and each of a's searched among them, so that -0 finds +0 and a NaN finds nothing, as NumPy's
+// sorting method answers; `invert` the opposite. NotImplemented for anything else, which isin then answers in Python.
+// The Python steps (unique, the promotion, searchsorted, the comparison) took 14 µs on a handful of elements, NumPy 3.
+PyObject* module_isin_sorted(PyObject* /*self*/, PyObject* args)
+{
+    PyObject* x      = nullptr;
+    PyObject* y      = nullptr;
+    int       invert = 0;
+    if (PyArg_ParseTuple(args, "OOp", &x, &y, &invert) == 0) {
+        return nullptr;
+    }
+    auto* const       type {reinterpret_cast<PyTypeObject*>(sb::class_type<any_tensor>())};
+    const auto        held {[type](PyObject* obj) -> const any_tensor* {
+        return PyObject_TypeCheck(obj, type) != 0 ? reinterpret_cast<sb::wrapper<any_tensor>*>(obj)->held : nullptr;
+    }};
+    const any_tensor* a {held(x)};
+    const any_tensor* b {held(y)};
+    if (a == nullptr || b == nullptr || a->index() != b->index() || (a->index() != 0 && a->index() != 2 && a->index() != int_index)) {
+        return Py_NewRef(Py_NotImplemented);
+    }
+    try {
+        const auto searched = [&]<typename T>(std::type_identity<T>) {
+            const T* const    elements {static_cast<const T*>(data_of(*a))};
+            const T* const    tests {static_cast<const T*>(data_of(*b))};
+            const std::size_t count {count_of(*a)};
+            std::vector<T>    sorted;
+            sorted.reserve(count_of(*b));
+            std::copy_if(tests, tests + count_of(*b), std::back_inserter(sorted), [](T v) { return v == v; }); // no NaN
+            std::ranges::sort(sorted);
+            numerical::buffer<boolean> out(count);
+            const bool                 flip {invert != 0};
+            for (std::size_t i = 0; i < count; ++i) {
+                const T value {elements[i]};
+                // a NaN finds nothing: binary_search would take it for every element, none being less or greater
+                out[i] = boolean {(value == value && std::ranges::binary_search(sorted, value)) != flip};
+            }
+            return wrap(any_tensor {bool_tensor {{count}, std::move(out)}});
+        };
+        switch (a->index()) {
+        case 0: return searched(std::type_identity<double> {});
+        case 2: return searched(std::type_identity<float> {});
+        default: return searched(std::type_identity<std::int64_t> {});
+        }
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
 } // namespace numerical_binding

@@ -292,6 +292,8 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
           "_borrowed_compare(op, x, y) -> Tensor or NotImplemented\nx op y of Tensors and NumPy arrays read where they lie, and weak numbers.");
     m.raw("_isin_table", module_isin_table, METH_VARARGS,
           "_isin_table(a, b, invert) -> Tensor or NotImplemented\nisin of two int64 Tensors by NumPy's table method.");
+    m.raw("_isin_sorted", module_isin_sorted, METH_VARARGS,
+          "_isin_sorted(a, b, invert) -> Tensor or NotImplemented\nisin of two Tensors of one dtype by b's sorted elements.");
     m.raw("_borrowed_where", module_borrowed_where, METH_VARARGS,
           "_borrowed_where(condition, x, y) -> Tensor or NotImplemented\nwhere of a bool condition and operands read where they lie.");
     m.raw("_borrowed_reduce", module_borrowed_reduce, METH_VARARGS,

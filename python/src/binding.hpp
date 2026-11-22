@@ -3677,6 +3677,10 @@ PyObject* module_borrowed_compare(PyObject* /*self*/, PyObject* args); // in ele
 // its memory bound.
 PyObject* module_isin_table(PyObject* /*self*/, PyObject* args); // in elementwise.cpp
 
+// _isin_sorted(a, b, invert) -> bool Tensor or NotImplemented: isin of two Tensors of one dtype (float64, float32, int64)
+// by b's sorted elements, searched.
+PyObject* module_isin_sorted(PyObject* /*self*/, PyObject* args); // in elementwise.cpp
+
 // _gather_index(t, index) -> Tensor or NotImplemented: t[index] for a bool mask over t's leading axes or an integer
 // array along its first, read where they lie and gathered in C.
 PyObject* module_gather_index(PyObject* /*self*/, PyObject* args); // in elementwise.cpp

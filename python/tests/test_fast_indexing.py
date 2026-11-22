@@ -169,6 +169,20 @@ class IsinTable(unittest.TestCase):
                         got = numerical.isin(ta, tb, invert=invert, kind=kind)
                         self.assertEqual(got.shape, a.shape)
                         np.testing.assert_array_equal(np.asarray(got), np.isin(a, b, invert=invert, kind=kind))
+        # floats of one dtype, b sorted and searched in C: a NaN finds nothing (b's NaNs left out), -0 finds +0
+        nan = np.nan
+        for dtype in (np.float64, np.float32):
+            a = np.array([nan, 1.0, -0.0, 2.0, 3.5, -1.0, nan], dtype)
+            for b in (np.array([0.0, 1.0, nan, -1.0], dtype), np.array([nan], dtype), np.array([], dtype),
+                      rng.integers(0, 50, 40).astype(dtype)):
+                for invert in (False, True):
+                    with self.subTest(dtype=np.dtype(dtype).name, tests=b.tolist()[:4], invert=invert):
+                        got = numerical.isin(numerical.asarray(a), numerical.asarray(b), invert=invert)
+                        np.testing.assert_array_equal(np.asarray(got), np.isin(a, b, invert=invert))
+        mixed = numerical.isin(numerical.asarray([1.0, 2.0]), numerical.asarray(np.array([2.0], np.float32)))
+        np.testing.assert_array_equal(np.asarray(mixed), [False, True])  # two dtypes: promoted in Python
+        self.assertIs(numerical._numerical._isin_sorted(numerical.asarray([1.0]), numerical.asarray(np.array([1.0], np.float32)), False),
+                      NotImplemented)
         table = numerical._numerical._isin_table
         ints = numerical.asarray(np.arange(4), "int64")
         self.assertIs(table(numerical.asarray([1.0, 2.0]), ints, False), NotImplemented)

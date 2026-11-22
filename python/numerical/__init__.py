@@ -9025,6 +9025,10 @@ def _isin(ar1, ar2, assume_unique=False, invert=False, kind=None):
         flags = _numerical._isin_table(a, b, bool(invert))
         if flags is not NotImplemented:
             return flags
+    if a.dtype == b.dtype and kind != "table":  # b sorted and searched in C, of one real dtype
+        flags = _numerical._isin_sorted(a, b, bool(invert))
+        if flags is not NotImplemented:
+            return flags
     # NumPy's sort of the two together: with duplicates in a, an element matches the next one. Of two dtypes, distinct
     # elements of a may meet in the promoted one (INT64_MIN and INT64_MIN + 1 in float64): each looked up in b below
     if assume_unique and a.dtype == b.dtype:
