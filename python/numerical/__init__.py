@@ -8368,12 +8368,27 @@ for _name in ("swapaxes", "clip", "ptp", "var", "std", "dot", "prod", "cumsum", 
         setattr(Tensor, _name, (lambda function: lambda self, *args, **kwargs: function(self, *args, **kwargs))(globals()[_name]))
 del _name
 
+_FAST_OPERANDS = (Tensor, float, int)  # the operands _numerical._fast_binary takes, by their exact types
+
+
 def _borrowed_arithmetic(op, x1, x2):
     """``x1 op x2`` (op one of "+-*/") where an operand is an array (neither a Tensor, a number nor a list or tuple):
     a NumPy array read where it lies beside a Tensor, another array or a Python float or int of its dtype
     (:func:`_numerical._borrowed_binary`, the bits of the Tensor operator); NotImplemented otherwise, the operands
-    then read by :func:`_binary_operands`."""
-    if (type(x1) is Tensor and type(x2) is Tensor) or not (_array_like(x1) or _array_like(x2)):
+    then read by :func:`_binary_operands`. Two Tensors, or a Tensor beside a Python float or int, go first to
+    :func:`_numerical._fast_binary`, as the operator ``x1 op x2`` would take them: 0.71 µs for an add of two small
+    Tensors through the Python steps, 0.33 by the operator."""
+    kind1, kind2 = type(x1), type(x2)
+    if (kind1 is Tensor or kind2 is Tensor) and kind1 in _FAST_OPERANDS and kind2 in _FAST_OPERANDS:
+        if not _numpy_loops_measured and op in "*/":
+            _numpy_loops()
+        try:
+            fast = _numerical._fast_binary(op, x1, x2)
+        except error as caught:  # shapes that do not broadcast, as _native raises it
+            raise _ShapeError(*caught.args) from None
+        if fast is not NotImplemented or (kind1 is Tensor and kind2 is Tensor):
+            return fast
+    if (kind1 is Tensor and kind2 is Tensor) or not (_array_like(x1) or _array_like(x2)):
         return NotImplemented
     if not _numpy_loops_measured and op in "*/":
         _numpy_loops()

@@ -154,6 +154,33 @@ class FastOperators(unittest.TestCase):
         with self.assertRaises(ValueError):
             numerical.ones(3) < numerical.ones(4)
 
+    def test_the_arithmetic_functions_answer_as_the_operators(self):
+        # add, subtract, multiply and divide of Tensors and Python numbers (the short path first, as the operators
+        # take them): the operator's dtype, shape and bytes, or its error, for every dtype beside every other, bools,
+        # ints and floats on either side, rank 0, shapes that broadcast and shapes that do not.
+        functions = {"+": numerical.add, "-": numerical.subtract, "*": numerical.multiply, "/": numerical.divide}
+        tensors = [numerical.asarray(np.arange(1, 7, dtype=dtype).reshape(2, 3)) for dtype in
+                   (np.float64, np.float32, np.complex128, np.complex64)]
+        tensors += [numerical.asarray([[1, 2, 3], [4, 5, 6]], "int64"), numerical.asarray([[True, False, True]] * 2),
+                    numerical.asarray(2.5), numerical.asarray(np.ones((3, 1))), numerical.asarray(np.ones(4))]
+        numbers = [2, -3, 2.5, True, 1j, 2**70]
+        for op, f in functions.items():
+            for x in tensors + numbers:
+                for y in tensors + numbers:
+                    if not isinstance(x, numerical.Tensor) and not isinstance(y, numerical.Tensor):
+                        continue
+                    with self.subTest(op=op, x=getattr(x, "dtype", x), y=getattr(y, "dtype", y),
+                                      shapes=(getattr(x, "shape", ()), getattr(y, "shape", ()))):
+                        try:
+                            want = ARITHMETIC[op](x, y)
+                        except Exception as caught:  # noqa: BLE001 - the same error either way
+                            with self.assertRaises(type(caught)):
+                                f(x, y)
+                            continue
+                        got = f(x, y)
+                        self.assertEqual((got.dtype, got.shape), (want.dtype, want.shape))
+                        self.assertEqual(np.asarray(got).tobytes(), np.asarray(want).tobytes())
+
     def test_the_operands_the_short_path_leaves_answer_as_before(self):
         # Two dtypes promote; a bool Tensor and an int64 one beside a number take the promoting path (an int there is
         # exact, past int64 compared as NumPy 2 compares it); a complex number promotes; a complex Tensor has no order,
