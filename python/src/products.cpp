@@ -755,7 +755,16 @@ numerical::tensor<T> joined_rows(const std::vector<join_part<T>>& parts, std::ve
     for (std::size_t o = 0; o < outer; ++o) {
         for (const join_part<T>& part : parts) {
             const std::size_t run {part.extent * inner};
-            at = std::copy_n(part.data + (o * run), run, at);
+            const T*          from {part.data + (o * run)};
+            if (run < 8) { // a few elements: copied one by one, where a call to copy them cost more than they do
+                for (std::size_t k = 0; k < run; ++k) {
+                    at[k] = from[k];
+                }
+                at += run;
+            }
+            else {
+                at = std::copy_n(from, run, at);
+            }
         }
     }
     return numerical::tensor<T> {std::move(shape), std::move(out)};
