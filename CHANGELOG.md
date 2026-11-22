@@ -13,6 +13,8 @@ A change that can break code is listed under **Breaking** and held for a month's
 - **`add`, `subtract`, `multiply` and `divide` of Tensors take the operators' short path**: two Tensors, or a Tensor
   beside a Python float or int, go to the C step `x1 + x2` takes first, the same answer and errors: two small Tensors
   added 0.71 → 0.35 µs (NumPy 0.27).
+- **`clip` of a float Tensor between two Python numbers** reads them in C, as `asarray` would round them to its
+  dtype: 75 doubles 2.95 → 0.45 µs (NumPy 1.34). The same answers and errors.
 - **`quantile`, `percentile` and `median` select by a partition without branches**, every position a call asks at
   once (the parts around each pivot holding none left alone), the NaNs set apart first, where `std::nth_element` at
   each position mispredicted a branch on half the elements: M1 Pro, 10⁵ doubles, one quantile 1.75 → 0.32 ms (NumPy

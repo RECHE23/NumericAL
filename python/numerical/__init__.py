@@ -6292,6 +6292,9 @@ def minimum(x1, x2, /):
     return logical_and(x1, x2)
 
 
+_WEAK_BOUNDS = (float, int)  # the bounds _numerical._clip reads as numbers, by their exact types
+
+
 def clip(a, a_min=None, a_max=None, *, min=None, max=None):  # noqa: A002 (NumPy's and the array API's names)
     """`a` limited to ``[a_min, a_max]`` element-wise, as ``numpy.clip``: ``minimum(maximum(a, a_min), a_max)``, either
     bound None for none (`a` itself for both). A NaN in `a` stays. `min` and `max`, NumPy 2's and the array API's
@@ -6304,6 +6307,11 @@ def clip(a, a_min=None, a_max=None, *, min=None, max=None):  # noqa: A002 (NumPy
         if a_max is not None:
             raise ValueError("clip: a_max and max name the same bound; pass one")
         a_max = max
+    if (type(a) is Tensor and type(a_min) in _WEAK_BOUNDS and type(a_max) in _WEAK_BOUNDS
+            and a.dtype in ("float64", "float32")):  # two weak numbers: one pass, without their tensors
+        clipped = _numerical._clip(a, a_min, a_max)
+        if clipped is not NotImplemented:
+            return clipped
     a = _operand(a)
     if a.dtype == "int64":  # NumPy's: a Python int past int64 on the side that removes nothing bounds nothing
         if type(a_min) is int and a_min < -2 ** 63:

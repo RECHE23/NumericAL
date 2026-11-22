@@ -181,6 +181,35 @@ class FastOperators(unittest.TestCase):
                         self.assertEqual((got.dtype, got.shape), (want.dtype, want.shape))
                         self.assertEqual(np.asarray(got).tobytes(), np.asarray(want).tobytes())
 
+    def test_clip_between_two_python_numbers_answers_as_their_tensors(self):
+        # clip of a float64 or float32 Tensor between two Python floats or ints, read in C as numbers: the answer of
+        # the path through their tensors (asarray(number, dtype)), its dtype and bytes, or its error, for NaNs,
+        # infinities and signed zeros among the elements and as bounds, bounds no float32 holds, bounds crossed, past float32 and an int no
+        # double holds; int64 and complex Tensors and other bounds through the tensors as before.
+        def through_tensors(*args):
+            numerical._WEAK_BOUNDS = ()
+            try:
+                return numerical.clip(*args)
+            finally:
+                numerical._WEAK_BOUNDS = (float, int)
+        bounds = [(-0.5, 0.5), (0.1, 0.7), (-0.7, -0.1), (0, 1), (1e300, -1e300), (2**70, 3), (0.5, -0.5), (-0.0, 0.0), (0.0, -0.0),
+                  (float("nan"), 1.0), (1, float("inf")), (10**400, 1), (-3, 2**1000), (True, 2.0), (1j, 2.0)]
+        values = np.array([np.nan, -np.inf, -1, -0.0, 0.0, 0.3, 2, np.inf, 3e38])
+        for dtype in ("float64", "float32", "int64", "complex128"):
+            x = numerical.asarray(values if dtype != "int64" else np.arange(-4, 5), dtype)
+            for low, high in bounds:
+                with self.subTest(dtype=dtype, low=low, high=high):
+                    try:
+                        want = through_tensors(x, low, high)
+                    except Exception as caught:  # noqa: BLE001 - the same error either way
+                        with self.assertRaises(type(caught)):
+                            numerical.clip(x, low, high)
+                        continue
+                    got = numerical.clip(x, low, high)
+                    self.assertEqual((got.dtype, np.asarray(got).tobytes()), (want.dtype, np.asarray(want).tobytes()))
+        self.assertIs(numerical._numerical._clip(numerical.asarray([1, 2], "int64"), 0, 1), NotImplemented)
+        self.assertIs(numerical._numerical._clip(numerical.asarray([1.0]), 10**400, 1), NotImplemented)
+
     def test_the_operands_the_short_path_leaves_answer_as_before(self):
         # Two dtypes promote; a bool Tensor and an int64 one beside a number take the promoting path (an int there is
         # exact, past int64 compared as NumPy 2 compares it); a complex number promotes; a complex Tensor has no order,

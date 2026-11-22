@@ -104,8 +104,30 @@ PyObject* module_extreme_pair(PyObject* /*self*/, PyObject* args)
     }
 }
 
-// _clip(a, low, high) -> Tensor: numerical::clip of a float64, float32 or int64 tensor between two rank-0 tensors of
-// its dtype, in one pass.
+namespace {
+
+// A Python float or int (not a bool) as the arithmetic operators take one beside a tensor of a float or complex dtype
+// (asarray(number, dtype)'s double), into `value`; false for anything else, or an int no double holds, no error set:
+// the converting path then raises the error.
+bool weak_number(PyObject* obj, double& value)
+{
+    if (PyFloat_CheckExact(obj) == 0 && PyLong_CheckExact(obj) == 0) {
+        return false;
+    }
+    value = PyFloat_AsDouble(obj);
+    if (PyErr_Occurred() != nullptr) {
+        PyErr_Clear();
+        return false;
+    }
+    return true;
+}
+
+} // namespace
+
+// _clip(a, low, high) -> Tensor or NotImplemented: numerical::clip of a float64, float32 or int64 tensor between two
+// rank-0 tensors of its dtype, or of a float64 or float32 one between two Python floats or ints (weak: asarray(number,
+// dtype)'s elements), in one pass; NotImplemented for two Python numbers beside another dtype, or an int no double
+// holds, which the converting path answers. The numbers' tensors took 1.5 of the 2.9 µs of a clip of 75 doubles.
 PyObject* module_clip(PyObject* /*self*/, PyObject* args)
 {
     PyObject* x    = nullptr;
@@ -115,9 +137,20 @@ PyObject* module_clip(PyObject* /*self*/, PyObject* args)
         return nullptr;
     }
     const any_tensor* a = as_tensor(x);
-    const any_tensor* l = a == nullptr ? nullptr : as_tensor(low);
-    const any_tensor* h = l == nullptr ? nullptr : as_tensor(high);
-    if (h == nullptr) {
+    if (a == nullptr) {
+        return nullptr;
+    }
+    // Two Python floats or ints beside a float Tensor, weak: asarray(number, dtype)'s elements, without their tensors.
+    double     low_value {0.0};
+    double     high_value {0.0};
+    const bool exact {(PyFloat_CheckExact(low) != 0 || PyLong_CheckExact(low) != 0) && (PyFloat_CheckExact(high) != 0 || PyLong_CheckExact(high) != 0)};
+    const bool numbers {(a->index() == 0 || a->index() == 2) && weak_number(low, low_value) && weak_number(high, high_value)};
+    if (exact && !numbers) { // an int no double holds, or a tensor of another dtype: the converting path's answer
+        return Py_NewRef(Py_NotImplemented);
+    }
+    const any_tensor* l = numbers ? nullptr : as_tensor(low);
+    const any_tensor* h = numbers || l == nullptr ? nullptr : as_tensor(high);
+    if (!numbers && h == nullptr) {
         return nullptr;
     }
     try {
@@ -125,7 +158,13 @@ PyObject* module_clip(PyObject* /*self*/, PyObject* args)
         {
             const sb::scoped_gil_release unlocked {releases_gil(count_of(*a))};
             const auto                   clipped = [&]<typename T>(std::type_identity<T>) {
-                if (const auto* values {std::get_if<numerical::tensor<T>>(a)}; values != nullptr && l->index() == a->index() && h->index() == a->index()) {
+                const auto* values {std::get_if<numerical::tensor<T>>(a)};
+                if (values != nullptr && numbers) {
+                    if constexpr (std::is_floating_point_v<T>) {
+                        result.emplace(numerical::clip(*values, static_cast<T>(low_value), static_cast<T>(high_value)));
+                    }
+                }
+                else if (values != nullptr && l->index() == a->index() && h->index() == a->index()) {
                     const auto& lower {std::get<numerical::tensor<T>>(*l)};
                     const auto& upper {std::get<numerical::tensor<T>>(*h)};
                     if (lower.size() == 1 && upper.size() == 1) {
@@ -2765,21 +2804,6 @@ PyObject* module_borrowed_unary(PyObject* /*self*/, PyObject* args)
 
 namespace {
 
-// A Python float or int (not a bool) as the arithmetic operators take one beside a tensor of a float or complex dtype
-// (asarray(number, dtype)'s double), into `value`; false for anything else, or an int no double holds, no error set:
-// the converting path then raises the error.
-bool weak_number(PyObject* obj, double& value)
-{
-    if (PyFloat_CheckExact(obj) == 0 && PyLong_CheckExact(obj) == 0) {
-        return false;
-    }
-    value = PyFloat_AsDouble(obj);
-    if (PyErr_Occurred() != nullptr) {
-        PyErr_Clear();
-        return false;
-    }
-    return true;
-}
 
 // A borrowed operand's elements, or a weak number's, and their shape: the number one element of no axis.
 template <typename T>
