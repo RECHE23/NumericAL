@@ -3157,4 +3157,58 @@ PyObject* module_borrowed_compare(PyObject* /*self*/, PyObject* args)
         return set_cpp_error();
     }
 }
+
+// _isin_table(a, b, invert) -> bool Tensor or NotImplemented: whether each element of the int64 Tensor `a` (in C order)
+// is among those of the int64 Tensor `b`, by NumPy's table method: a flag for each value from b's least to its largest,
+// where that range is no more than 6 times the two counts together (NumPy's memory bound for its default), `invert` the
+// opposite; NotImplemented otherwise (another dtype, an empty b, a wider range), which the sorting method then answers
+// alike. Sorting took 2.5 ms for 10^5 elements among 10^4 in a range of 2.5 × 10^4, NumPy's table 0.27.
+PyObject* module_isin_table(PyObject* /*self*/, PyObject* args)
+{
+    PyObject* x      = nullptr;
+    PyObject* y      = nullptr;
+    int       invert = 0;
+    if (PyArg_ParseTuple(args, "OOp", &x, &y, &invert) == 0) {
+        return nullptr;
+    }
+    auto* const       type {reinterpret_cast<PyTypeObject*>(sb::class_type<any_tensor>())};
+    const auto        held {[type](PyObject* obj) -> const any_tensor* {
+        return PyObject_TypeCheck(obj, type) != 0 ? reinterpret_cast<sb::wrapper<any_tensor>*>(obj)->held : nullptr;
+    }};
+    const any_tensor* a {held(x)};
+    const any_tensor* b {held(y)};
+    if (a == nullptr || b == nullptr || !is_int(*a) || !is_int(*b) || count_of(*b) == 0) {
+        return Py_NewRef(Py_NotImplemented);
+    }
+    const auto* const elements {static_cast<const std::int64_t*>(data_of(*a))};
+    const auto* const tests {static_cast<const std::int64_t*>(data_of(*b))};
+    const std::size_t count {count_of(*a)};
+    const std::size_t test_count {count_of(*b)};
+    const auto [least, largest] {std::minmax_element(tests, tests + test_count)};
+    // the range in unsigned arithmetic, exact for any two int64 (NumPy refuses a range past INT64_MAX: its sort then)
+    const std::uint64_t range {static_cast<std::uint64_t>(*largest) - static_cast<std::uint64_t>(*least)};
+    if (range > std::uint64_t {INT64_MAX} || range > 6 * (static_cast<std::uint64_t>(count) + test_count)) {
+        return Py_NewRef(Py_NotImplemented);
+    }
+    try {
+        std::vector<unsigned char> table(static_cast<std::size_t>(range) + 1, 0);
+        const std::int64_t         low {*least};
+        const std::int64_t         high {*largest};
+        for (std::size_t j = 0; j < test_count; ++j) {
+            table[static_cast<std::size_t>(static_cast<std::uint64_t>(tests[j]) - static_cast<std::uint64_t>(low))] = 1;
+        }
+        numerical::buffer<boolean> out(count);
+        const bool                 flip {invert != 0};
+        for (std::size_t i = 0; i < count; ++i) {
+            const std::int64_t value {elements[i]};
+            const bool inside {value >= low && value <= high
+                               && table[static_cast<std::size_t>(static_cast<std::uint64_t>(value) - static_cast<std::uint64_t>(low))] != 0};
+            out[i] = boolean {inside != flip};
+        }
+        return wrap(any_tensor {bool_tensor {{count}, std::move(out)}});
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
 } // namespace numerical_binding

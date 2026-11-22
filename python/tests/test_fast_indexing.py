@@ -146,5 +146,35 @@ class FastConcatenate(unittest.TestCase):
             numerical.concatenate([])
 
 
+@unittest.skipIf(np is None, "NumPy is not installed")
+class IsinTable(unittest.TestCase):
+    # isin of two int64 Tensors by NumPy's table method within its memory bound (_isin_table), the sorting method past
+    # it: NumPy's answers either way.
+    def test_integers_are_looked_up_as_numpy_does(self):
+        rng = np.random.default_rng(15)
+        big = np.iinfo(np.int64)
+        cases = [(rng.integers(-50, 50, (4, 5)), rng.integers(-20, 30, 7)),  # negative values, a's shape kept
+                 (rng.integers(0, 10**4, 10**5), rng.integers(0, 10**4, 10**3)),
+                 (rng.integers(0, 100, 30), np.array([5])),  # one test value
+                 (np.array([big.min, -1, 0, big.max]), np.array([big.min, big.max])),  # a range past INT64_MAX: sorted
+                 (rng.integers(0, 10**9, 50), rng.integers(0, 10**9, 50)),  # past the memory bound: sorted
+                 (rng.integers(0, 10, 12), np.array([], np.int64))]
+        for a, b in cases:
+            ta, tb = numerical.asarray(a, "int64"), numerical.asarray(b, "int64")
+            for invert in (False, True):
+                for kind in (None, "sort", "table"):
+                    if kind == "table" and b.size and int(b.max()) - int(b.min()) >= 2**63:
+                        continue
+                    with self.subTest(size=a.size, tests=b.size, invert=invert, kind=kind):
+                        got = numerical.isin(ta, tb, invert=invert, kind=kind)
+                        self.assertEqual(got.shape, a.shape)
+                        np.testing.assert_array_equal(np.asarray(got), np.isin(a, b, invert=invert, kind=kind))
+        table = numerical._numerical._isin_table
+        ints = numerical.asarray(np.arange(4), "int64")
+        self.assertIs(table(numerical.asarray([1.0, 2.0]), ints, False), NotImplemented)
+        self.assertIs(table(ints, numerical.asarray(np.array([], np.int64), "int64"), False), NotImplemented)
+        self.assertIs(table(ints, numerical.asarray(np.array([0, 10**12]), "int64"), False), NotImplemented)
+
+
 if __name__ == "__main__":
     unittest.main()

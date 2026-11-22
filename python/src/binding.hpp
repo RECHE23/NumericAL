@@ -3673,6 +3673,10 @@ PyObject* module_fast_compare(PyObject* self, PyObject* args); // in elementwise
 // and a weak Python number, of one float or complex dtype, _compare's relations.
 PyObject* module_borrowed_compare(PyObject* /*self*/, PyObject* args); // in elementwise.cpp
 
+// _isin_table(a, b, invert) -> bool Tensor or NotImplemented: isin of two int64 Tensors by NumPy's table method, within
+// its memory bound.
+PyObject* module_isin_table(PyObject* /*self*/, PyObject* args); // in elementwise.cpp
+
 // _gather_index(t, index) -> Tensor or NotImplemented: t[index] for a bool mask over t's leading axes or an integer
 // array along its first, read where they lie and gathered in C.
 PyObject* module_gather_index(PyObject* /*self*/, PyObject* args); // in elementwise.cpp

@@ -9021,6 +9021,10 @@ def _isin(ar1, ar2, assume_unique=False, invert=False, kind=None):
                            "maximum integer of the datatype. Please set `kind` to None or 'sort'.")
     if integers and b.shape[0] == 0:
         return ones(a.shape, "bool") if invert else zeros(a.shape, "bool")
+    if a.dtype == "int64" and b.dtype == "int64" and kind != "sort":  # NumPy's table, within its memory bound
+        flags = _numerical._isin_table(a, b, bool(invert))
+        if flags is not NotImplemented:
+            return flags
     # NumPy's sort of the two together: with duplicates in a, an element matches the next one. Of two dtypes, distinct
     # elements of a may meet in the promoted one (INT64_MIN and INT64_MIN + 1 in float64): each looked up in b below
     if assume_unique and a.dtype == b.dtype:

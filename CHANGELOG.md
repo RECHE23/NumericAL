@@ -29,6 +29,9 @@ A change that can break code is listed under **Breaking** and held for a month's
   along the last axis hopped between rows): an M1 Pro, two 3 × 4 parts 1.3 → 0.5 µs (NumPy 0.5), NumPy arrays
   2.5 → 0.8 µs, two 1000 × 1000 along the columns 592 → 311 µs (NumPy 396). Two dtypes, `dtype=`, `axis=None` and
   anything else as before.
+- **`isin` of int64 values takes NumPy's table method** where the test values' range is within its memory bound (6
+  times the two counts), a flag for each value, where it sorted: an M1 Pro, 10⁵ elements among 10⁴, 2.5 → 0.10 ms
+  (NumPy 0.31). The same answers; a wider range, other dtypes and `kind="sort"` sort as before.
 - **Comparisons read NumPy arrays where they lie** (`less`, `greater`, `equal`… and a Tensor's operators beside an
   array), for float and complex operands of one dtype or a Python number beside one, where the array was copied into a
   Tensor: an M1 Pro, `greater` of a 9 × 9 array and 0 1.40 → 0.47 µs (NumPy 0.50). The same answers and errors.
