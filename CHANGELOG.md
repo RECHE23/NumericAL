@@ -19,6 +19,11 @@ A change that can break code is listed under **Breaking** and held for a month's
   through `asarray` and checked the dtypes: on 16 doubles, an M1 Pro, `t * 2.0` 1.01 → 0.36 µs (NumPy 0.38), `t > 0.5`
   1.28 → 0.45 µs, `t + t` 0.48 → 0.32 µs. The same answers and errors; an int64 or bool Tensor beside a number, two
   dtypes and a complex number take the promoting path as before.
+- **`t[mask]`, `t[indices]` and `take` gather in C**: a bool mask over a Tensor's leading axes and an integer array
+  (a list, a NumPy array, an int64 Tensor) along its first axis, alone in the key, and `take` of the flattened tensor
+  or along the first axis, where Python walked NumPy's general rules: an M1 Pro, `t[mask]` of 3 elements 5.7 → 0.5 µs,
+  `t[rows]` 7.8 → 0.6 µs (200 × 300: 21.8 → 5.2 µs, NumPy 7.6), `take` 2.6 → 0.7 µs. Any other key, and an index out of
+  the axis, as before (its errors in NumPy's words).
 - **`where` reads NumPy arrays where they lie**, a bool condition and operands of one float or complex dtype (or a
   Python float or int beside one), where it copied each into a Tensor first, and **chooses each element by a mask of
   its bits**, where a branch mispredicted half the time on a condition of no pattern: an M1 Pro, 10⁵ doubles, NumPy

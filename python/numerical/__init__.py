@@ -359,6 +359,14 @@ def _getitem(self, key):
     give a number, anything else a Tensor that reads the elements where they lie, as NumPy's view does (a Tensor is
     never written through, so the view and a copy read alike). An integer or bool array in the key (a list, a NumPy array, a bool Tensor, a lone bool) makes it
     NumPy's advanced indexing (:func:`_getitem_advanced`)."""
+    kind = type(key)
+    if kind is not tuple and kind is not int and kind is not slice and key is not None and key is not Ellipsis:
+        # a mask or an integer array alone, gathered in C (_gather_index); anything else, or out of bounds, as below
+        index = _asarray_nested(key, "int64") if kind is list else key
+        if index is not None:
+            picked = _numerical._gather_index(self, index)
+            if picked is not NotImplemented:
+                return picked
     if not isinstance(key, tuple):
         key = (key,)
     shape = self.shape
@@ -7101,6 +7109,12 @@ def take(a, indices, axis=None, mode="raise"):
     result's shape `a`'s with that axis replaced by the indices' shape. `mode` "raise" refuses an index out of the
     axis, "wrap" takes it modulo the extent, "clip" to the nearest end."""
     a = _tensor(a)
+    if (axis is None or axis == 0) and mode == "raise" and not isinstance(indices, _numbers.Integral):
+        index = _asarray_nested(indices, "int64") if type(indices) is list else indices  # gathered in C, as a[index]
+        if index is not None:
+            picked = _numerical._gather_index(a, index, axis is None)
+            if picked is not NotImplemented:
+                return picked
     if axis is None:
         a, axis = reshape(a, (-1,)), 0
     axis = _axis(a, axis)

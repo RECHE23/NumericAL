@@ -3669,6 +3669,10 @@ PyObject* module_fast_binary(PyObject* /*self*/, PyObject* args); // in elementw
 // or complex one, a weak Python float or int.
 PyObject* module_fast_compare(PyObject* self, PyObject* args); // in elementwise.cpp
 
+// _gather_index(t, index) -> Tensor or NotImplemented: t[index] for a bool mask over t's leading axes or an integer
+// array along its first, read where they lie and gathered in C.
+PyObject* module_gather_index(PyObject* /*self*/, PyObject* args); // in elementwise.cpp
+
 // _borrowed_where(condition, x, y) -> Tensor or NotImplemented: where of a bool Tensor or NumPy bool array and two
 // operands read where they lie (borrow_operand) or a weak Python float or int, of one float or complex dtype.
 PyObject* module_borrowed_where(PyObject* /*self*/, PyObject* args); // in elementwise.cpp

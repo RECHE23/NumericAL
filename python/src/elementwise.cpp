@@ -2939,4 +2939,145 @@ PyObject* module_fast_compare(PyObject* self, PyObject* args)
     }
 }
 
+
+namespace {
+
+// An index's integers read where they lie: an int64 Tensor's in C order, or a C-contiguous NumPy array of 4- or 8-byte
+// signed integers. `owner` (a new reference: the Tensor, or the capsule, which holds the array) keeps them alive.
+struct borrowed_indices
+{
+    PyObject*                owner {nullptr};
+    const void*              data {nullptr};
+    int                      bytes {8}; // each integer's size
+    std::vector<std::size_t> shape;
+
+    borrowed_indices() = default;
+    borrowed_indices(const borrowed_indices&) = delete;
+    borrowed_indices& operator=(const borrowed_indices&) = delete;
+    ~borrowed_indices() { Py_XDECREF(owner); }
+
+    [[nodiscard]] std::int64_t at(std::size_t i) const noexcept
+    {
+        return bytes == 8 ? static_cast<const std::int64_t*>(data)[i] : static_cast<const std::int32_t*>(data)[i];
+    }
+};
+
+// Whether `obj` is an int64 Tensor or such a NumPy array, read into `out`; false, no error set, otherwise.
+bool borrow_indices(PyObject* obj, borrowed_indices& out)
+{
+    if (PyObject_TypeCheck(obj, reinterpret_cast<PyTypeObject*>(sb::class_type<any_tensor>())) != 0) {
+        const any_tensor* v {reinterpret_cast<sb::wrapper<any_tensor>*>(obj)->held};
+        if (v == nullptr || !is_int(*v)) {
+            return false;
+        }
+        out.owner = Py_NewRef(obj);
+        out.data  = data_of(*v);
+        out.shape = shape_of(*v);
+        return true;
+    }
+    PyObject* capsule = PyObject_GetAttr(obj, interned_name<array_struct_name>()); // new ref
+    if (capsule == nullptr) {
+        PyErr_Clear();
+        return false;
+    }
+    const auto* view {static_cast<const array_struct*>(PyCapsule_GetPointer(capsule, nullptr))};
+    if (view == nullptr) {
+        PyErr_Clear();
+    }
+    constexpr int needed {array_c_contiguous | array_aligned | array_not_swapped};
+    if (view == nullptr || view->two != 2 || view->data == nullptr || view->typekind != 'i' || (view->itemsize != 8 && view->itemsize != 4)
+        || (view->flags & needed) != needed) {
+        Py_DECREF(capsule);
+        return false;
+    }
+    out.owner = capsule;
+    out.data  = view->data;
+    out.bytes = view->itemsize;
+    for (int axis = 0; axis < view->nd; ++axis) {
+        out.shape.push_back(static_cast<std::size_t>(view->shape[axis]));
+    }
+    return true;
+}
+
+} // namespace
+
+// _gather_index(t, index, flat=False) -> Tensor or NotImplemented: t[index] (with `flat`, of t's elements in C order, as
+// take(t, index) reads them) for the two advanced indexes most taken, read where they lie
+// and gathered in C: a bool Tensor or C-contiguous NumPy bool array over t's leading axes (their true elements' blocks
+// in C order, of shape (count,) and the axes after), or an int64 Tensor or C-contiguous NumPy integer array of rank 1 or
+// more along the first axis (the rows at those indices, a negative one counted from the end, of the index's shape and
+// the axes after). NotImplemented for anything else, a mask of another shape or an index out of the axis included,
+// which _getitem_advanced then takes (and refuses in NumPy's words). It took 5 to 9 µs of Python on a small tensor.
+PyObject* module_gather_index(PyObject* /*self*/, PyObject* args)
+{
+    PyObject* x     = nullptr;
+    PyObject* index = nullptr;
+    int       flat  = 0;
+    if (PyArg_ParseTuple(args, "OO|p", &x, &index, &flat) == 0) {
+        return nullptr;
+    }
+    if (PyObject_TypeCheck(x, reinterpret_cast<PyTypeObject*>(sb::class_type<any_tensor>())) == 0) {
+        return Py_NewRef(Py_NotImplemented);
+    }
+    const any_tensor* v {reinterpret_cast<sb::wrapper<any_tensor>*>(x)->held};
+    if (v == nullptr) {
+        return Py_NewRef(Py_NotImplemented);
+    }
+    const std::vector<std::size_t> shape {flat != 0 ? std::vector<std::size_t> {count_of(*v)} : shape_of(*v)}; // its elements in C order
+    const auto                     product {[](auto first, auto last) { return std::accumulate(first, last, std::size_t {1}, std::multiplies<> {}); }};
+    std::vector<std::size_t>       rows;        // the first element of each block taken, in blocks
+    std::vector<std::size_t>       out_shape;
+    std::size_t                    leading {0}; // the axes the index takes
+    borrowed_condition             mask;
+    borrowed_indices               integers;
+    if (borrow_condition(index, mask)) {
+        leading = mask.shape.size();
+        if (leading == 0 || leading > shape.size() || !std::equal(mask.shape.begin(), mask.shape.end(), shape.begin())) {
+            return Py_NewRef(Py_NotImplemented);
+        }
+        const std::size_t cells {product(mask.shape.begin(), mask.shape.end())};
+        for (std::size_t i = 0; i < cells; ++i) {
+            if (mask.data[i] != 0) {
+                rows.push_back(i);
+            }
+        }
+        out_shape.push_back(rows.size());
+    }
+    else if (borrow_indices(index, integers)) {
+        if (integers.shape.empty() || shape.empty()) {
+            return Py_NewRef(Py_NotImplemented);
+        }
+        leading = 1;
+        const auto        extent {static_cast<std::int64_t>(shape[0])};
+        const std::size_t count {product(integers.shape.begin(), integers.shape.end())};
+        rows.reserve(count);
+        for (std::size_t i = 0; i < count; ++i) {
+            const std::int64_t at {integers.at(i)};
+            if (at < -extent || at >= extent) { // refused by the general path, in NumPy's words
+                return Py_NewRef(Py_NotImplemented);
+            }
+            rows.push_back(static_cast<std::size_t>(at < 0 ? at + extent : at));
+        }
+        out_shape = integers.shape;
+    }
+    else {
+        return Py_NewRef(Py_NotImplemented);
+    }
+    out_shape.insert(out_shape.end(), shape.begin() + static_cast<std::ptrdiff_t>(leading), shape.end());
+    const std::size_t inner {product(shape.begin() + static_cast<std::ptrdiff_t>(leading), shape.end())};
+    try {
+        return std::visit([&](const auto& t) {
+            using T = element_of_t<std::decay_t<decltype(t)>>;
+            const T* const       source {static_cast<const T*>(data_of(*v))};
+            numerical::buffer<T> out(rows.size() * inner);
+            for (std::size_t r = 0; r < rows.size(); ++r) {
+                std::copy_n(source + (rows[r] * inner), inner, out.data() + (r * inner));
+            }
+            return wrap(any_tensor {numerical::tensor<T> {out_shape, std::move(out)}});
+        }, *v);
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
 } // namespace numerical_binding

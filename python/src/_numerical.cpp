@@ -284,6 +284,8 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
           "Python number.");
     m.raw("_fast_compare", module_fast_compare, METH_VARARGS,
           "_fast_compare(op, x, y) -> Tensor or NotImplemented\n_compare of a Tensor and a Tensor of its dtype or a weak Python number.");
+    m.raw("_gather_index", module_gather_index, METH_VARARGS,
+          "_gather_index(t, index, flat=False) -> Tensor or NotImplemented\nt[index] (of t flattened with flat) for a bool mask or an integer array, gathered in C.");
     m.raw("_borrowed_where", module_borrowed_where, METH_VARARGS,
           "_borrowed_where(condition, x, y) -> Tensor or NotImplemented\nwhere of a bool condition and operands read where they lie.");
     m.raw("_borrowed_reduce", module_borrowed_reduce, METH_VARARGS,
