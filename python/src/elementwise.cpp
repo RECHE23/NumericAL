@@ -3080,4 +3080,81 @@ PyObject* module_gather_index(PyObject* /*self*/, PyObject* args)
         return set_cpp_error();
     }
 }
+
+// _borrowed_compare(op, x, y) -> bool Tensor or NotImplemented: x op y for op one of < <= == != > >=, each operand a
+// Tensor or a NumPy array read where they lie (borrow_operand), or one of them a Python float or int (weak: of the
+// other's dtype), the two of one float or complex dtype (a complex one compared by == and != alone); by the relations
+// _compare applies, through broadcast_rows, so its answer and its errors. NotImplemented for anything else, which the
+// converting path then takes. A NumPy array was copied into a Tensor first: greater of a 9 × 9 array and 0, M1 Pro,
+// 1.4 µs where NumPy takes 0.5.
+PyObject* module_borrowed_compare(PyObject* /*self*/, PyObject* args)
+{
+    const char* op = nullptr;
+    PyObject*   x  = nullptr;
+    PyObject*   y  = nullptr;
+    if (PyArg_ParseTuple(args, "sOO", &op, &x, &y) == 0) {
+        return nullptr;
+    }
+    static constexpr std::array<std::string_view, 6> names {"<", "<=", "==", "!=", ">", ">="};
+    const auto found {std::find(names.begin(), names.end(), std::string_view {op})};
+    if (found == names.end()) {
+        return Py_NewRef(Py_NotImplemented);
+    }
+    const auto       which {static_cast<std::size_t>(found - names.begin())};
+    double           x_value {0.0};
+    double           y_value {0.0};
+    const bool       x_number {weak_number(x, x_value)};
+    const bool       y_number {!x_number && weak_number(y, y_value)};
+    borrowed_operand a;
+    borrowed_operand b;
+    if ((!x_number && !borrow_operand(x, a)) || (!y_number && !borrow_operand(y, b)) || (!x_number && !y_number && a.dtype != b.dtype)) {
+        return Py_NewRef(Py_NotImplemented);
+    }
+    const std::size_t dtype {x_number ? b.dtype : a.dtype};
+    if ((dtype == 1 || dtype == 3) && which != 2 && which != 3) { // no order: the converting path refuses it
+        return Py_NewRef(Py_NotImplemented);
+    }
+    const std::vector<std::size_t> no_axes;
+    try {
+        std::optional<bool_tensor> result;
+        const auto                 compare = [&]<typename T>(std::type_identity<T>) {
+            namespace d = numerical::detail;
+            const T                         x_scalar {static_cast<T>(x_value)}; // asarray(number, dtype)'s element
+            const T                         y_scalar {static_cast<T>(y_value)};
+            const T* const                  u {x_number ? &x_scalar : static_cast<const T*>(a.data)};
+            const T* const                  v {y_number ? &y_scalar : static_cast<const T*>(b.data)};
+            const std::vector<std::size_t>& x_shape {x_number ? no_axes : a.shape};
+            const std::vector<std::size_t>& y_shape {y_number ? no_axes : b.shape};
+            const auto elements {[](const std::vector<std::size_t>& shape) { return d::element_count(shape.begin(), shape.end()); }};
+            const sb::scoped_gil_release unlocked {releases_gil(std::max(elements(x_shape), elements(y_shape)))};
+            const auto                   compared {[&](const auto& relation) {
+                result.emplace(d::broadcast_rows(u, x_shape, v, y_shape, [&relation](const T& p, const T& q) { return boolean {relation(p, q)}; }));
+            }};
+            switch (which) {
+            case 2: compared(std::equal_to<> {}); break;
+            case 3: compared(std::not_equal_to<> {}); break;
+            default:
+                if constexpr (!complex_scalar<T>) {
+                    switch (which) {
+                    case 0: compared(std::less<> {}); break;
+                    case 1: compared(std::less_equal<> {}); break;
+                    case 4: compared(std::greater<> {}); break;
+                    default: compared(std::greater_equal<> {}); break;
+                    }
+                }
+                break;
+            }
+        };
+        switch (dtype) {
+        case 0: compare(std::type_identity<double> {}); break;
+        case 1: compare(std::type_identity<std::complex<double>> {}); break;
+        case 2: compare(std::type_identity<float> {}); break;
+        default: compare(std::type_identity<std::complex<float>> {}); break;
+        }
+        return wrap(any_tensor {std::move(*result)});
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
 } // namespace numerical_binding

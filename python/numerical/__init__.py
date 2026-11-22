@@ -793,6 +793,13 @@ def _comparison(op):
                 raise _ShapeError(*caught.args) from None
             if fast is not NotImplemented:
                 return fast
+        if _array_like(other):  # a NumPy array of self's dtype, where it lies
+            try:
+                compared = _numerical._borrowed_compare(op, self, other)
+            except error as caught:
+                raise _ShapeError(*caught.args) from None
+            if compared is not NotImplemented:
+                return compared
         if kind is Tensor and other.dtype == self.dtype:
             a, b = self, other
         else:
@@ -4549,6 +4556,13 @@ _MIRRORED = {"<": ">", "<=": ">=", ">": "<", ">=": "<=", "==": "==", "!=": "!="}
 
 def _compared(op, name):
     def function(x1, x2, /):
+        if (type(x1) is not Tensor or type(x2) is not Tensor) and (_array_like(x1) or _array_like(x2)):
+            try:  # NumPy arrays read where they lie, in C
+                compared = _numerical._borrowed_compare(op, x1, x2)
+            except error as caught:  # shapes that do not broadcast, as _native raises it
+                raise _ShapeError(*caught.args) from None
+            if compared is not NotImplemented:
+                return compared
         if isinstance(x2, Tensor) and not isinstance(x1, Tensor) and _weak(x1):
             # a Python number first, read beside the tensor as the method reads it (an int beside an int64 tensor
             # exactly, where _read made it a float64): x1 op x2 is x2 mirrored-op x1

@@ -29,6 +29,9 @@ A change that can break code is listed under **Breaking** and held for a month's
   along the last axis hopped between rows): an M1 Pro, two 3 × 4 parts 1.3 → 0.5 µs (NumPy 0.5), NumPy arrays
   2.5 → 0.8 µs, two 1000 × 1000 along the columns 592 → 311 µs (NumPy 396). Two dtypes, `dtype=`, `axis=None` and
   anything else as before.
+- **Comparisons read NumPy arrays where they lie** (`less`, `greater`, `equal`… and a Tensor's operators beside an
+  array), for float and complex operands of one dtype or a Python number beside one, where the array was copied into a
+  Tensor: an M1 Pro, `greater` of a 9 × 9 array and 0 1.40 → 0.47 µs (NumPy 0.50). The same answers and errors.
 - **Telling a NumPy array from a number takes a dictionary lookup**, its type's answer kept, where
   `isinstance(x, numbers.Number)` walked the ABC machinery each call (0.23 µs, half a small `add`'s overhead): an M1 Pro,
   `add` of two 9 × 9 arrays 0.85 → 0.67 µs, `where` 1.47 → 1.30 µs.

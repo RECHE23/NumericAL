@@ -102,6 +102,39 @@ class FastOperators(unittest.TestCase):
                         self.assertEqual(got.dtype, str(want.dtype))
                         np.testing.assert_allclose(np.asarray(got), want, rtol=1e-6)
 
+    def test_a_comparison_reads_numpy_arrays_where_they_lie(self):
+        # A comparison with a NumPy array operand, by the functions and a Tensor's operators: the Tensors' answer, for
+        # each dtype (a complex one by == and != alone), broadcast, beside a Python number, NaNs included; a complex
+        # order refused and shapes that do not broadcast as before.
+        functions = {"<": numerical.less, "<=": numerical.less_equal, "==": numerical.equal,
+                     "!=": numerical.not_equal, ">": numerical.greater, ">=": numerical.greater_equal}
+        rng = np.random.default_rng(14)
+        for dtype in (np.float64, np.float32, np.complex128, np.complex64):
+            for left, right in (((3, 4), (3, 4)), ((3, 4), (4,)), ((1,), (5,)), ((), (6,)), ((2, 3), ())):
+                a = np.round(rng.standard_normal(left) * 2).astype(dtype)
+                b = np.round(rng.standard_normal(right) * 2).astype(dtype)
+                if a.size:
+                    a.reshape(-1)[0] = np.nan
+                ta, tb = numerical.asarray(a), numerical.asarray(b)
+                for name, f in functions.items():
+                    if np.dtype(dtype).kind == "c" and name not in ("==", "!="):
+                        with self.assertRaises(TypeError):
+                            f(a, b)
+                        continue
+                    with self.subTest(dtype=np.dtype(dtype).name, left=left, right=right, op=name):
+                        want = np.asarray(f(ta, tb))
+                        for got in (f(a, b), f(ta, b), f(a, tb), COMPARISONS[name](ta, b)):
+                            self.assertIsInstance(got, numerical.Tensor)
+                            self.assertEqual(got.dtype, "bool")
+                            np.testing.assert_array_equal(np.asarray(got), want)
+                        for number in (0.5, 1, -2):
+                            np.testing.assert_array_equal(np.asarray(f(a, number)), np.asarray(f(ta, number)))
+                            np.testing.assert_array_equal(np.asarray(f(number, a)), np.asarray(f(number, ta)))
+        with self.assertRaises(ValueError):
+            numerical.less(np.ones(3), np.ones(4))
+        self.assertIs(numerical._numerical._borrowed_compare("<", np.ones(2), np.ones(2, np.float32)), NotImplemented)
+        self.assertIs(numerical._numerical._borrowed_compare("<>", np.ones(2), np.ones(2)), NotImplemented)
+
     def test_two_tensors_of_one_dtype_broadcast_as_numpy(self):
         rng = np.random.default_rng(8)
         for dtype in (np.float64, np.float32, np.complex128, np.int64):
