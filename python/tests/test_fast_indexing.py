@@ -1,6 +1,7 @@
 """The advanced indexes gathered in C (numerical._numerical._gather_index): a bool mask over a tensor's leading axes and
-an integer array along its first, alone in the key, and take along the first axis or of the flattened tensor; NumPy's
-answers, and the general path's (its errors included) for every other key."""
+an integer array along its first, alone in the key, and take along the first axis or of the flattened tensor; and
+concatenate of parts of one dtype joined in C (_concatenate_fast). NumPy's answers, and the general path's (its errors
+included) for every other key and call."""
 
 import unittest
 
@@ -90,6 +91,59 @@ class FastIndexing(unittest.TestCase):
         self.assert_like_numpy(tensor[[True, False, True, True]], a[[True, False, True, True]])
         self.assert_like_numpy(tensor[:, [2, 0]], a[:, [2, 0]])
         self.assertEqual(float(tensor[np.int64(1), 2]), a[1, 2])
+
+
+@unittest.skipIf(np is None, "NumPy is not installed")
+class FastConcatenate(unittest.TestCase):
+    # concatenate of Tensors and NumPy arrays of one dtype, read where they lie and joined in C
+    # (numerical._numerical._concatenate_fast); NumPy's answers, and the general path's for every other call.
+    def setUp(self):
+        self.rng = np.random.default_rng(13)
+
+    def assert_like_numpy(self, got, want):
+        want = np.asarray(want)
+        self.assertIsInstance(got, numerical.Tensor)
+        self.assertEqual(got.shape, want.shape)
+        self.assertEqual(np.asarray(got).tobytes(), want.astype(np.asarray(got).dtype).tobytes())
+
+    def test_parts_of_one_dtype_join_along_any_axis_as_numpys(self):
+        for dtype in (np.float64, np.float32, np.complex128, np.complex64):
+            for shapes, axis in ((((3, 4), (5, 4)), 0), (((3, 4), (3, 1), (3, 6)), 1), (((2, 3, 4), (2, 3, 1)), -1),
+                                 (((2, 3, 4), (2, 0, 4)), 1), (((7,), (2,)), 0), (((1000, 1000), (1000, 1000)), 1)):
+                parts = [self.rng.standard_normal(shape).astype(dtype) for shape in shapes]
+                want = np.concatenate(parts, axis=axis)
+                with self.subTest(dtype=np.dtype(dtype).name, shapes=shapes, axis=axis):
+                    self.assert_like_numpy(numerical.concatenate(parts, axis=axis), want)
+                    self.assert_like_numpy(numerical.concatenate([numerical.asarray(p) for p in parts], axis=axis), want)
+                    self.assert_like_numpy(numerical.concatenate(tuple([numerical.asarray(parts[0])] + parts[1:]), axis), want)
+        a = self.rng.standard_normal((4, 6))
+        for parts in ([numerical.asarray(a).T, numerical.asarray(a).T], [np.asfortranarray(a), a[::-1]],
+                      [np.asfortranarray(self.rng.standard_normal((400, 300))), self.rng.standard_normal((400, 300))]):
+            arrays = [np.asarray(p) for p in parts]
+            self.assert_like_numpy(numerical.concatenate(parts, axis=0), np.concatenate(arrays, axis=0))
+        for values in (a > 0, np.arange(24).reshape(4, 6)):  # bool and int64 Tensors joined in C, the arrays converted
+            tensor = numerical.asarray(values, "int64" if values.dtype.kind == "i" else None)
+            self.assert_like_numpy(numerical.concatenate([tensor, tensor], axis=1), np.concatenate([values, values], axis=1))
+
+    def test_other_calls_answer_as_before(self):
+        fast = numerical._numerical._concatenate_fast
+        a = self.rng.standard_normal((3, 4))
+        single = a.astype(np.float32)
+        for args in (([a, single], 0), ([a, a[:, :2]], 0), ([a, a], 2), ([a, a], -3), ([], 0), ([np.float64(1.0)], 0),
+                     ([a > 0, a > 0], 0), ([a, [1.0, 2.0, 3.0, 4.0]], 0), (a, 0)):
+            self.assertIs(fast(*args), NotImplemented)
+        self.assert_like_numpy(numerical.concatenate([a, single]), np.concatenate([a, single]))  # promoted
+        self.assert_like_numpy(numerical.concatenate([a, [[1.0, 2.0, 3.0, 4.0]]]), np.concatenate([a, [[1.0, 2.0, 3.0, 4.0]]]))
+        self.assert_like_numpy(numerical.concatenate([a, a], axis=None), np.concatenate([a, a], axis=None))
+        self.assert_like_numpy(numerical.concatenate([a, a], dtype="float32"), np.concatenate([a, a], dtype=np.float32))
+        with self.assertRaisesRegex(ValueError, "dimensions except for the concatenation axis must match"):
+            numerical.concatenate([a, a[:, :2]], axis=0)
+        with self.assertRaises(numerical.AxisError):
+            numerical.concatenate([a, a], axis=2)
+        with self.assertRaisesRegex(ValueError, "zero-dimensional"):
+            numerical.concatenate([numerical.asarray(1.0), numerical.asarray(2.0)])
+        with self.assertRaisesRegex(ValueError, "at least one array"):
+            numerical.concatenate([])
 
 
 if __name__ == "__main__":

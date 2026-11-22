@@ -3673,6 +3673,10 @@ PyObject* module_fast_compare(PyObject* self, PyObject* args); // in elementwise
 // array along its first, read where they lie and gathered in C.
 PyObject* module_gather_index(PyObject* /*self*/, PyObject* args); // in elementwise.cpp
 
+// _concatenate_fast(parts, axis) -> Tensor or NotImplemented: concatenate of Tensors and NumPy arrays read where they
+// lie, of one dtype, rank and shape but along the axis.
+PyObject* module_concatenate_fast(PyObject* /*self*/, PyObject* args); // in products.cpp
+
 // _borrowed_where(condition, x, y) -> Tensor or NotImplemented: where of a bool Tensor or NumPy bool array and two
 // operands read where they lie (borrow_operand) or a weak Python float or int, of one float or complex dtype.
 PyObject* module_borrowed_where(PyObject* /*self*/, PyObject* args); // in elementwise.cpp

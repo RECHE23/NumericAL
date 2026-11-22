@@ -5873,6 +5873,10 @@ def concatenate(arrays, /, axis=0, out=None, *, dtype=None):
         numerical.Tensor([[1.0, 2.0, 3.0, 4.0]], dtype=float64)
     """
     _no_out(out, "concatenate")
+    if dtype is None and type(axis) is int and (type(arrays) is list or type(arrays) is tuple):
+        joined = _numerical._concatenate_fast(arrays, axis)  # Tensors and NumPy arrays of one dtype, read in C
+        if joined is not NotImplemented:
+            return joined
     tensors = _joined(arrays, "concatenate")
     if dtype is not None:
         name = _checked_dtype(dtype, "concatenate: ")

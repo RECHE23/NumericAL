@@ -731,6 +731,93 @@ PyObject* module_stack_last(PyObject* /*self*/, PyObject* args)
     }
 }
 
+namespace {
+
+// One part of a join: its elements in C order, and its extent along the axis.
+template <typename T>
+struct join_part
+{
+    const T*    data;
+    std::size_t extent;
+};
+
+// The parts one after the other along the axis `along` of `shape` (the first part's), `outer` blocks before it and
+// `inner` elements after it, `total` its joined extent: each row of the output written in turn, every part's run of it
+// one after the other, so that the writes go forward through the output (part by part, a join along the last axis
+// hopped between its rows).
+template <typename T>
+numerical::tensor<T> joined_rows(const std::vector<join_part<T>>& parts, std::vector<std::size_t> shape, std::size_t along,
+                                 std::size_t outer, std::size_t inner, std::size_t total)
+{
+    shape[along] = total;
+    numerical::buffer<T> out(numerical::detail::checked_mul(numerical::detail::checked_mul(outer, total), inner));
+    T*                   at {out.data()};
+    for (std::size_t o = 0; o < outer; ++o) {
+        for (const join_part<T>& part : parts) {
+            const std::size_t run {part.extent * inner};
+            at = std::copy_n(part.data + (o * run), run, at);
+        }
+    }
+    return numerical::tensor<T> {std::move(shape), std::move(out)};
+}
+
+// A join's parts read where they lie: each one's elements, shape and dtype (the any_tensor index), the borrowed arrays
+// held while they are read.
+struct join_operands
+{
+    std::vector<const void*>                       data;
+    std::vector<std::vector<std::size_t>>          shapes;
+    std::vector<std::size_t>                       dtypes;
+    std::vector<std::unique_ptr<borrowed_operand>> held;
+};
+
+// The parts `along` an axis of `shapes[0]`'s rank joined, in the dtype of every part (the caller checked it); the
+// shapes checked by the caller to differ along it alone.
+PyObject* join(const join_operands& operands, std::size_t along)
+{
+    const std::vector<std::size_t>& first {operands.shapes.front()};
+    std::size_t                     total {0};
+    for (const std::vector<std::size_t>& shape : operands.shapes) {
+        total += shape[along];
+    }
+    const std::size_t outer {numerical::detail::element_count(first.begin(), first.begin() + static_cast<std::ptrdiff_t>(along))};
+    const std::size_t inner {numerical::detail::element_count(first.begin() + static_cast<std::ptrdiff_t>(along) + 1, first.end())};
+    const auto        joined = [&]<typename T>(std::type_identity<T>) {
+        std::vector<join_part<T>> parts;
+        for (std::size_t i = 0; i < operands.data.size(); ++i) {
+            parts.push_back({static_cast<const T*>(operands.data[i]), operands.shapes[i][along]});
+        }
+        return wrap(any_tensor {joined_rows(parts, first, along, outer, inner, total)});
+    };
+    switch (operands.dtypes.front()) {
+    case 0: return joined(std::type_identity<double> {});
+    case 1: return joined(std::type_identity<std::complex<double>> {});
+    case 2: return joined(std::type_identity<float> {});
+    case 3: return joined(std::type_identity<std::complex<float>> {});
+    case bool_index: return joined(std::type_identity<boolean> {});
+    default: return joined(std::type_identity<std::int64_t> {});
+    }
+}
+
+// Whether every shape is of `first`'s rank and extents but along `along`.
+bool joinable(const std::vector<std::vector<std::size_t>>& shapes, std::size_t along)
+{
+    const std::vector<std::size_t>& first {shapes.front()};
+    return std::ranges::all_of(shapes, [&](const std::vector<std::size_t>& shape) {
+        if (shape.size() != first.size()) {
+            return false;
+        }
+        for (std::size_t d = 0; d < shape.size(); ++d) {
+            if (d != along && shape[d] != first[d]) {
+                return false;
+            }
+        }
+        return true;
+    });
+}
+
+} // namespace
+
 // _concatenate(parts, axis) -> Tensor: tensors of one dtype and rank, of one shape but along `axis`, one after the
 // other along it (a copy), as numpy.concatenate once the caller has promoted them to one dtype.
 PyObject* module_concatenate(PyObject* /*self*/, PyObject* args)
@@ -747,7 +834,7 @@ PyObject* module_concatenate(PyObject* /*self*/, PyObject* args)
         }
         return nullptr;
     }
-    std::vector<const any_tensor*> parts;
+    join_operands operands;
     for (Py_ssize_t i = 0; i < count; ++i) {
         PyObject* item = PySequence_GetItem(seq, i); // new ref; the sequence keeps the tensor alive
         if (item == nullptr) {
@@ -758,48 +845,78 @@ PyObject* module_concatenate(PyObject* /*self*/, PyObject* args)
         if (part == nullptr) {
             return nullptr;
         }
-        parts.push_back(part);
+        operands.data.push_back(data_of(*part));
+        operands.shapes.push_back(shape_of(*part));
+        operands.dtypes.push_back(part->index());
     }
-    const std::vector<std::size_t>& first_shape {shape_of(*parts.front())};
-    const auto                      rank {static_cast<Py_ssize_t>(first_shape.size())};
+    const auto rank {static_cast<Py_ssize_t>(operands.shapes.front().size())};
     if (axis < 0 || axis >= rank) {
         PyErr_SetString(PyExc_ValueError, "_concatenate: the axis is out of the tensors' rank");
         return nullptr;
     }
-    const auto  along {static_cast<std::size_t>(axis)};
-    std::size_t total {0};
-    for (const any_tensor* part : parts) {
-        const std::vector<std::size_t>& shape {shape_of(*part)};
-        bool                            fits {part->index() == parts.front()->index() && shape.size() == first_shape.size()};
-        for (std::size_t d = 0; fits && d < shape.size(); ++d) {
-            fits = d == along || shape[d] == first_shape[d];
-        }
-        if (!fits) {
-            PyErr_SetString(PyExc_ValueError, "all the input array dimensions except for the concatenation axis must match exactly");
-            return nullptr;
-        }
-        total += shape[along];
+    const auto along {static_cast<std::size_t>(axis)};
+    if (!joinable(operands.shapes, along)
+        || !std::ranges::all_of(operands.dtypes, [&](std::size_t dtype) { return dtype == operands.dtypes.front(); })) {
+        PyErr_SetString(PyExc_ValueError, "all the input array dimensions except for the concatenation axis must match exactly");
+        return nullptr;
     }
     try {
-        return std::visit([&](const auto& first) {
-            using tensor_type = std::decay_t<decltype(first)>;
-            using T           = std::remove_cvref_t<decltype(first.data()[0])>;
-            const std::size_t outer {numerical::detail::element_count(first_shape.begin(), first_shape.begin() + axis)};
-            const std::size_t inner {numerical::detail::element_count(first_shape.begin() + axis + 1, first_shape.end())};
-            std::vector<std::size_t> shape {first_shape};
-            shape[along] = total;
-            numerical::buffer<T> out(numerical::detail::checked_mul(numerical::detail::checked_mul(outer, total), inner));
-            std::size_t          offset {0}; // where each part's run starts in a row of the output
-            for (const any_tensor* part : parts) {
-                const auto&       values {std::get<tensor_type>(*part).data()};
-                const std::size_t run {shape_of(*part)[along] * inner};
-                for (std::size_t o = 0; o < outer; ++o) {
-                    std::copy_n(values.begin() + static_cast<std::ptrdiff_t>(o * run), run, out.begin() + static_cast<std::ptrdiff_t>((o * total * inner) + offset));
-                }
-                offset += run;
+        return join(operands, along);
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
+// _concatenate_fast(parts, axis) -> Tensor or NotImplemented: numpy.concatenate of a list or tuple of Tensors and NumPy
+// arrays read where they lie (borrow_operand: float or complex, contiguous or small), all of one dtype and rank (1 or
+// more), of one shape but along `axis` (negative counted from the end); NotImplemented for anything else (two dtypes,
+// an array not so read, a bad axis or shape), which concatenate then promotes, converts or refuses as before. A NumPy
+// array was copied into a Tensor first, and Python checked the parts: 2.5 µs for two 3 × 4 arrays, NumPy 0.5.
+PyObject* module_concatenate_fast(PyObject* /*self*/, PyObject* args)
+{
+    PyObject*  seq  = nullptr;
+    Py_ssize_t axis = 0;
+    if (PyArg_ParseTuple(args, "On", &seq, &axis) == 0) {
+        return nullptr;
+    }
+    if ((PyList_Check(seq) == 0 && PyTuple_Check(seq) == 0) || PySequence_Size(seq) <= 0) {
+        return Py_NewRef(Py_NotImplemented);
+    }
+    const Py_ssize_t count {PySequence_Size(seq)};
+    auto* const      type {reinterpret_cast<PyTypeObject*>(sb::class_type<any_tensor>())};
+    join_operands    operands;
+    for (Py_ssize_t i = 0; i < count; ++i) {
+        PyObject* item {PyList_Check(seq) != 0 ? PyList_GetItem(seq, i) : PyTuple_GetItem(seq, i)}; // borrowed
+        if (PyObject_TypeCheck(item, type) != 0) {
+            const any_tensor* part {reinterpret_cast<sb::wrapper<any_tensor>*>(item)->held};
+            if (part == nullptr) {
+                return Py_NewRef(Py_NotImplemented);
             }
-            return wrap(any_tensor {tensor_type {std::move(shape), std::move(out)}});
-        }, *parts.front());
+            operands.data.push_back(data_of(*part));
+            operands.shapes.push_back(shape_of(*part));
+            operands.dtypes.push_back(part->index());
+            continue;
+        }
+        auto& borrowed {operands.held.emplace_back(std::make_unique<borrowed_operand>())};
+        if (!borrow_operand(item, *borrowed)) {
+            return Py_NewRef(Py_NotImplemented);
+        }
+        operands.data.push_back(borrowed->data);
+        operands.shapes.push_back(borrowed->shape);
+        operands.dtypes.push_back(borrowed->dtype);
+    }
+    const auto rank {static_cast<Py_ssize_t>(operands.shapes.front().size())};
+    if (rank == 0 || axis < -rank || axis >= rank) {
+        return Py_NewRef(Py_NotImplemented);
+    }
+    const auto along {static_cast<std::size_t>(axis < 0 ? axis + rank : axis)};
+    if (!joinable(operands.shapes, along)
+        || !std::ranges::all_of(operands.dtypes, [&](std::size_t dtype) { return dtype == operands.dtypes.front(); })) {
+        return Py_NewRef(Py_NotImplemented);
+    }
+    try {
+        return join(operands, along);
     }
     catch (...) {
         return set_cpp_error();

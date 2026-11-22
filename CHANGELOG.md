@@ -24,6 +24,11 @@ A change that can break code is listed under **Breaking** and held for a month's
   or along the first axis, where Python walked NumPy's general rules: an M1 Pro, `t[mask]` of 3 elements 5.7 → 0.5 µs,
   `t[rows]` 7.8 → 0.6 µs (200 × 300: 21.8 → 5.2 µs, NumPy 7.6), `take` 2.6 → 0.7 µs. Any other key, and an index out of
   the axis, as before (its errors in NumPy's words).
+- **`concatenate` joins Tensors and NumPy arrays of one dtype in C**, the arrays read where they lie, where Python
+  converted and checked every part, and **writes each row of the result in turn**, where it wrote part by part (a join
+  along the last axis hopped between rows): an M1 Pro, two 3 × 4 parts 1.3 → 0.5 µs (NumPy 0.5), NumPy arrays
+  2.5 → 0.8 µs, two 1000 × 1000 along the columns 592 → 311 µs (NumPy 396). Two dtypes, `dtype=`, `axis=None` and
+  anything else as before.
 - **`where` reads NumPy arrays where they lie**, a bool condition and operands of one float or complex dtype (or a
   Python float or int beside one), where it copied each into a Tensor first, and **chooses each element by a mask of
   its bits**, where a branch mispredicted half the time on a condition of no pattern: an M1 Pro, 10⁵ doubles, NumPy
