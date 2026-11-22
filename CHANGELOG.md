@@ -29,6 +29,10 @@ A change that can break code is listed under **Breaking** and held for a month's
   along the last axis hopped between rows): an M1 Pro, two 3 × 4 parts 1.3 → 0.5 µs (NumPy 0.5), NumPy arrays
   2.5 → 0.8 µs, two 1000 × 1000 along the columns 592 → 311 µs (NumPy 396). Two dtypes, `dtype=`, `axis=None` and
   anything else as before.
+- **Fortran-ordered pairs are computed as they lie**: `+ - * /` and the comparisons of two column-major matrices of one
+  shape (NumPy's Fortran order, a Tensor's transpose), or of one beside a number, read their elements in that order and
+  answer in it, as NumPy's, where they were copied to row-major first: an M1 Pro, `divide` 413 × 95 51.9 → 10.7 µs
+  (NumPy 10.3), 1000 × 1000 138 µs (NumPy 637). The same bits.
 - **`isin` of int64 values takes NumPy's table method** where the test values' range is within its memory bound (6
   times the two counts), a flag for each value, where it sorted: an M1 Pro, 10⁵ elements among 10⁴, 2.5 → 0.10 ms
   (NumPy 0.31). The same answers; a wider range, other dtypes and `kind="sort"` sort as before.

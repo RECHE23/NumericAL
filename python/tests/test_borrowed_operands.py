@@ -224,6 +224,35 @@ class BorrowedOperands(unittest.TestCase):
         with self.assertRaises(ValueError):
             numerical.where(np.ones(3, bool), np.ones(4), 0.0)
 
+    def test_fortran_ordered_pairs_are_computed_as_they_lie(self):
+        # Column-major matrices of one shape (Fortran order, a Tensor's transpose), or one beside a number, are computed
+        # on their elements as they lie and answer in that order, as NumPy's; a column-major matrix beside a row-major
+        # array is read in C order. The Tensors' bits (NaNs' places), small and large, arithmetic and comparisons.
+        functions = {"+": numerical.add, "-": numerical.subtract, "*": numerical.multiply, "/": numerical.divide}
+        for dtype in (np.float64, np.complex128, np.float32, np.complex64):
+            for shape in ((7, 5), (400, 300)):
+                x, y = self.special(shape, dtype), self.special(shape, dtype)
+                fx, fy = np.asfortranarray(x), np.asfortranarray(y)
+                tx, ty = numerical.asarray(x), numerical.asarray(y)
+                for op, f in functions.items():
+                    with self.subTest(dtype=np.dtype(dtype).name, shape=shape, op=op):
+                        want = f(tx, ty)
+                        for got in (f(fx, fy), f(numerical.asarray(np.ascontiguousarray(x.T)).T, fy), f(fx, y), f(x, fy)):
+                            self.assert_same_bits(got, want)
+                        self.assert_same_bits(f(fx, 2.5), f(tx, 2.5))
+                        self.assert_same_bits(f(2.5, fx), f(2.5, tx))
+                        if shape == (400, 300):
+                            self.assertTrue(np.asarray(f(fx, fy)).flags.f_contiguous)  # NumPy's order
+                for name in ("less", "equal", "not_equal", "greater_equal"):
+                    if np.dtype(dtype).kind == "c" and name not in ("equal", "not_equal"):
+                        continue
+                    with self.subTest(dtype=np.dtype(dtype).name, shape=shape, compare=name):
+                        f = getattr(numerical, name)
+                        want = np.asarray(f(tx, ty))
+                        np.testing.assert_array_equal(np.asarray(f(fx, fy)), want)
+                        np.testing.assert_array_equal(np.asarray(f(fx, y)), want)
+                        np.testing.assert_array_equal(np.asarray(f(fx, 0.5)), np.asarray(f(tx, 0.5)))
+
     def test_arithmetic_on_arrays_not_read_in_place_answers_as_the_tensors(self):
         # Two dtypes (promoted), bools, integers, a complex or bool Python number, an int past a double, shapes that do
         # not broadcast: the converting path's answer or error, unchanged.
