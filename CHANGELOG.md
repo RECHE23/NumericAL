@@ -8,6 +8,8 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+## 2026.11.22 — 2026-11-22
+
 ### Changed
 
 - **`add`, `subtract`, `multiply` and `divide` of Tensors take the operators' short path**: two Tensors, or a Tensor
