@@ -42,6 +42,10 @@ and an `IndexError`), is also a `numpy.exceptions.AxisError`; where `scipy.linal
   1.414e200, where NumPy's is infinite.
 - **`maximum`, `minimum`, `fmax`, `fmin`, `max` and `min` order the zeros** as IEEE 754-2019: +0 above −0,
   whatever the order they come in. NumPy on arm64 agrees; NumPy on x86-64 keeps the sign its loops meet first.
+- **A complex times a real multiplies each part by the real** (`x * y`, `outer`, `kron`): `(a + bi) c` is
+  `ac + bci`, as NumPy's `x * y`. NumPy's `outer` and `kron` promote the real to a complex first on some processors,
+  `(a + bi)(c + 0i)`, whose real part `ac − b·0` turns a −0 into +0 (NumPy 2.5.5 on x86-64: `outer` of
+  `-2.2e-308 - 0.1j` and `5.6e-309` has a real part of +0, `x * y` of −0).
 - **`power` of float64 on an x86-64 processor with AVX-512** is the C library's, as NumPy's on other processors;
   NumPy's there is its own vector kernel, whose last bit differs from it in some 5 % of the powers.
 - **`exp` of float64** is NumericAL's own, in vectors (a table of 2^(j/128) and a polynomial): within 0.506 ulp of the

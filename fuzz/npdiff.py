@@ -486,6 +486,9 @@ def padding(rng):
               lambda: numerical.pad(ours(a), width, mode).shape)
         return
     rule = {"ulps": 1} if mode in ("mean", "linear_ramp") else {}
+    if mode in ("maximum", "minimum"):  # the edges NumPy's max and min of their windows: on x86-64, a zero's sign from
+        # its vector loops' order (NumPy 2.5.5: np.min([-0.0, 0.0]) is 0.0)
+        rule = EXTREME_ZEROS
     if mode == "mean" and a.ndim > 1:  # the means along the first axes, which NumPy adds row by row
         rule = other_order(a)
     same(rule, "", "pad", a, width, mode)
@@ -645,8 +648,12 @@ def indexing(rng):
 def products(rng):
     a = array(rng, (int(rng.integers(0, 4)),), kinds=("f8", "i8", "c16"), special=0.2)
     b = array(rng, (int(rng.integers(0, 4)),), kinds=("f8", "i8"), special=0.2)
-    same({}, "", "outer", a, b)
-    same({}, "", "kron", a, b)
+    # A complex beside a real: NumPy's loops disagree on a zero's sign, one promoting the real to complex (re·c − im·0,
+    # where -0.0 − -0.0 is 0.0), another multiplying each part (-0.0): NumPy 2.5.5 on x86-64 gives outer(x, y) 0.0 and
+    # x * y -0.0 for x = -2.2e-308 - 0.1j, y = 5.6e-309 (kron as outer). NumericAL multiplies each part, as x * y.
+    mixed = {"zero_signs": True} if a.dtype.kind == "c" else {}
+    same(mixed, "", "outer", a, b)
+    same(mixed, "", "kron", a, b)
     u, v = array(rng, (3,), kinds=("f8",), special=0.2), array(rng, (3,), kinds=("f8",), special=0.2)
     same({}, "", "cross", u, v)
     grids = [array(rng, (int(rng.integers(0, 4)),), kinds=("f8",)) for _ in range(int(rng.integers(1, 4)))]
