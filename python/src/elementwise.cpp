@@ -2973,25 +2973,21 @@ any_tensor borrowed_arithmetic(char op, const binary_operand<T>& x, const binary
 // where each array operand is a matrix whose elements run column-major (Fortran order, a transpose) of one shape and
 // the other operand a number, both as they lie, `columns` set: the answer then computed on the elements in that order
 // (of the reversed shape) and transposed back, as NumPy answers a Fortran-ordered pair in that order. A number's operand
-// stays empty. False where an array operand is read neither way.
+// stays empty, and where `columns` each array operand's shape is reversed, the shape the computation reads. False where
+// an array operand is read neither way. The operands live in the pair, not on the heap: a small operation's time is
+// mostly its allocations.
 struct borrowed_pair
 {
-    std::unique_ptr<borrowed_operand> x;
-    std::unique_ptr<borrowed_operand> y;
-    bool                              columns {false};
-
-    // An operand's shape as the computation reads it: the reversed one where `columns`.
-    [[nodiscard]] std::vector<std::size_t> read_shape(const borrowed_operand& operand) const
-    {
-        return columns ? std::vector<std::size_t>(operand.shape.rbegin(), operand.shape.rend()) : operand.shape;
-    }
+    std::optional<borrowed_operand> x;
+    std::optional<borrowed_operand> y;
+    bool                            columns {false};
 };
 
 bool borrow_pair(PyObject* x, PyObject* y, bool x_number, bool y_number, borrowed_pair& out)
 {
     const auto borrow = [&](bool columns) {
-        out.x = std::make_unique<borrowed_operand>();
-        out.y = std::make_unique<borrowed_operand>();
+        out.x.emplace();
+        out.y.emplace();
         return (x_number || borrow_operand(x, *out.x, columns)) && (y_number || borrow_operand(y, *out.y, columns));
     };
     if (borrow(true)) {
@@ -3002,6 +2998,8 @@ bool borrow_pair(PyObject* x, PyObject* y, bool x_number, bool y_number, borrowe
         }
         if ((x_number || x_columns) && (y_number || y_columns) && (x_number || y_number || out.x->shape == out.y->shape)) {
             out.columns = true;
+            std::reverse(out.x->shape.begin(), out.x->shape.end());
+            std::reverse(out.y->shape.begin(), out.y->shape.end());
             return true;
         }
     }
@@ -3041,8 +3039,8 @@ PyObject* module_borrowed_binary(PyObject* /*self*/, PyObject* args)
     const std::size_t                    dtype {x_number ? b.dtype : a.dtype};
     const numerical::detail::numpy_loops loops {numpy_loops_beside()}; // read while the GIL is held
     const std::vector<std::size_t>       no_axes;
-    const std::vector<std::size_t>       x_shape {x_number ? no_axes : pair.read_shape(a)};
-    const std::vector<std::size_t>       y_shape {y_number ? no_axes : pair.read_shape(b)};
+    const std::vector<std::size_t>&      x_shape {x_number ? no_axes : a.shape};
+    const std::vector<std::size_t>&      y_shape {y_number ? no_axes : b.shape};
     try {
         std::optional<any_tensor> result;
         const auto                apply = [&]<typename T>(std::type_identity<T>) {
@@ -3433,8 +3431,8 @@ PyObject* module_borrowed_compare(PyObject* /*self*/, PyObject* args)
             const T                         y_scalar {static_cast<T>(y_value)};
             const T* const                  u {x_number ? &x_scalar : static_cast<const T*>(a.data)};
             const T* const                  v {y_number ? &y_scalar : static_cast<const T*>(b.data)};
-            const std::vector<std::size_t>  x_shape {x_number ? no_axes : pair.read_shape(a)};
-            const std::vector<std::size_t>  y_shape {y_number ? no_axes : pair.read_shape(b)};
+            const std::vector<std::size_t>& x_shape {x_number ? no_axes : a.shape};
+            const std::vector<std::size_t>& y_shape {y_number ? no_axes : b.shape};
             const auto elements {[](const std::vector<std::size_t>& shape) { return d::element_count(shape.begin(), shape.end()); }};
             const sb::scoped_gil_release unlocked {releases_gil(std::max(elements(x_shape), elements(y_shape)))};
             const auto                   compared {[&](const auto& relation) {
