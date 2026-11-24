@@ -81,11 +81,16 @@ class FastIndexing(unittest.TestCase):
                         index = np.array([0, outside, 1], width)
                         with self.subTest(dtype=name, shape=shape, width=width.__name__, outside=int(outside)):
                             self.assertIs(gather(tensor, index), NotImplemented)
-                            with self.assertRaises(IndexError) as theirs:
-                                values[index]
                             with self.assertRaises(IndexError) as ours:
                                 tensor[index]
-                            self.assertEqual(str(ours.exception), str(theirs.exception))
+                            self.assertEqual(str(ours.exception),
+                                             f"index {int(outside)} is out of bounds for axis 0 with size {extent}")
+                            if np.iinfo(np.intp).min <= outside <= np.iinfo(np.intp).max:
+                                # NumPy casts the indices to intp: on a 32-bit Python it wraps int64's extremes
+                                # into the axis (2**63 - 1 to -1) and reads them
+                                with self.assertRaises(IndexError) as theirs:
+                                    values[index]
+                                self.assertEqual(str(ours.exception), str(theirs.exception))
 
     def test_take_of_the_flattened_tensor_and_along_the_first_axis(self):
         a = self.rng.standard_normal((4, 6))
