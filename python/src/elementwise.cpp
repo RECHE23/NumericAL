@@ -2747,26 +2747,63 @@ PyObject* module_borrowed_norm(PyObject* /*self*/, PyObject* obj)
     return PyFloat_FromDouble(x.dtype >= 2 ? static_cast<double>(static_cast<float>(*norm)) : *norm);
 }
 
-// _borrowed_reduce(op, x) -> number or NotImplemented: sum, mean, max or min of every element of a NumPy array read
-// where it lies (borrow_operand: its elements in C order, as its Tensor's), by the functions numerical::sum, mean, max
-// and min call on a Tensor's storage, so their bits; NotImplemented for any other operand, and for max or min of a
-// complex or an empty one, which the converting path then takes (and refuses, as for a Tensor). The array was copied into a Tensor first, three
-// to four times the reduction's own time: 10^6 doubles summed 1.51 ms against 0.35 from a Tensor.
+// _borrowed_reduce(op, x, axis=None) -> number, Tensor or NotImplemented: sum, mean, max or min of every element of a
+// NumPy array read where it lies (borrow_operand: its elements in C order, as its Tensor's), or with an int `axis` its
+// sums or means along that axis (a Tensor), by the functions numerical::sum, mean, max and min call on a Tensor's
+// storage, so their bits; NotImplemented for any other operand or axis, and for max or min of a complex or an empty
+// one, which the converting path then takes (and refuses, as for a Tensor). The array was copied into a Tensor first,
+// three to four times the reduction's own time: 10^6 doubles summed 1.51 ms against 0.35 from a Tensor.
 PyObject* module_borrowed_reduce(PyObject* /*self*/, PyObject* args)
 {
-    const char* op  = nullptr;
-    PyObject*   obj = nullptr;
-    if (PyArg_ParseTuple(args, "sO", &op, &obj) == 0) {
+    const char* op   = nullptr;
+    PyObject*   obj  = nullptr;
+    PyObject*   axis = Py_None;
+    if (PyArg_ParseTuple(args, "sO|O", &op, &obj, &axis) == 0) {
         return nullptr;
     }
     const std::string_view name {op};
     borrowed_operand       x;
-    if ((name != "sum" && name != "mean" && name != "max" && name != "min") || !borrow_operand(obj, x)) {
+    if ((name != "sum" && name != "mean" && name != "max" && name != "min") || (axis != Py_None && name != "sum" && name != "mean")
+        || (axis != Py_None && PyLong_CheckExact(axis) == 0) || !borrow_operand(obj, x)) {
         return Py_NewRef(Py_NotImplemented);
     }
     std::size_t count {1};
     for (const std::size_t extent : x.shape) {
         count *= extent;
+    }
+    if (axis != Py_None) {
+        // Along an axis (negative counted from the end), as numerical::sum and mean take a Tensor's: its lines' sums by
+        // detail::pairwise_sums, a mean each divided by the count, so their bits. The array was copied into a Tensor
+        // first: 160 × 709 complex128 summed along the first axis 83.8 µs against 50.9 from a Tensor.
+        const long long rank {static_cast<long long>(x.shape.size())};
+        const long long along {PyLong_AsLongLong(axis)};
+        if ((along == -1 && PyErr_Occurred() != nullptr) || along < -rank || along >= rank) {
+            PyErr_Clear(); // past a long long, or outside the axes: the converting path raises it
+            return Py_NewRef(Py_NotImplemented);
+        }
+        const auto at {static_cast<std::size_t>(along < 0 ? along + rank : along)};
+        try {
+            const auto along_axis = [&]<typename T>(std::type_identity<T>) -> PyObject* {
+                const numerical::detail::axis_walk walk {numerical::detail::walk_along(x.shape, at)};
+                numerical::buffer<T>               out(walk.outer * walk.inner);
+                numerical::detail::pairwise_sums(static_cast<const T*>(x.data), walk.outer, walk.extent, walk.inner, out.data());
+                if (name == "mean") {
+                    for (T& each : out) {
+                        each = numerical::detail::divided_by_count(each, walk.extent);
+                    }
+                }
+                return wrap(any_tensor {numerical::tensor<T> {numerical::detail::without_axis(x.shape, at), std::move(out)}});
+            };
+            switch (x.dtype) {
+            case 0: return along_axis(std::type_identity<double> {});
+            case 1: return along_axis(std::type_identity<std::complex<double>> {});
+            case 2: return along_axis(std::type_identity<float> {});
+            default: return along_axis(std::type_identity<std::complex<float>> {});
+            }
+        }
+        catch (...) {
+            return set_cpp_error();
+        }
     }
     try {
         const auto reduce = [&]<typename T>(std::type_identity<T>) -> PyObject* {

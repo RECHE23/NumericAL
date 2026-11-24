@@ -3786,6 +3786,10 @@ def _reduction(op, doc):
             whole = _numerical._borrowed_reduce(op, a)  # every element of a NumPy array read where it lies
             if whole is not NotImplemented:
                 return whole
+        if type(axis) is int and not keepdims and op in ("sum", "mean") and not isinstance(a, Tensor):
+            along = _numerical._borrowed_reduce(op, a, axis)  # along an axis of a NumPy array read where it lies
+            if along is not NotImplemented:
+                return along
         a = a if isinstance(a, Tensor) else _read(a)
         rank = len(a.shape)
         if isinstance(axis, tuple):  # several axes: moved last and run together, one native reduction over them

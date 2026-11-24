@@ -299,7 +299,7 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     m.raw("_borrowed_where", module_borrowed_where, METH_VARARGS,
           "_borrowed_where(condition, x, y) -> Tensor or NotImplemented\nwhere of a bool condition and operands read where they lie.");
     m.raw("_borrowed_reduce", module_borrowed_reduce, METH_VARARGS,
-          "_borrowed_reduce(op, x) -> number or NotImplemented\nsum, mean, max or min of every element of a NumPy array read where it lies.");
+          "_borrowed_reduce(op, x, axis=None) -> number, Tensor or NotImplemented\nsum, mean, max or min of every element of a NumPy array read where it lies, or its sums or means along an int axis.");
     m.raw("_borrowed_norm", module_borrowed_norm, METH_O,
           "_borrowed_norm(x) -> float or NotImplemented\nThe 2-norm of every element of a Tensor or a NumPy array read where it lies.");
     m.raw("_vector_norm", module_vector_norm, METH_VARARGS,

@@ -101,6 +101,41 @@ class BorrowedOperands(unittest.TestCase):
         self.assertIs(numerical._numerical._borrowed_reduce("prod", np.ones(3)), NotImplemented)
         self.assertIs(numerical._numerical._borrowed_reduce("sum", [1.0, 2.0]), NotImplemented)
 
+    def test_a_sum_or_mean_along_an_axis_reads_the_array_and_gives_the_tensors_bits(self):
+        # sum and mean of a NumPy array along each axis (negative counted from the end), read where it lies: the
+        # Tensor's answer to the bit, its type and shape, for each dtype, rows past the threads' runs of columns; an
+        # array in Fortran order or strided (copied in C order where small, through a Tensor where large), an axis
+        # outside the rank, past a long long, a bool, or a tuple of axes, as before.
+        for dtype in (np.float64, np.complex128, np.float32, np.complex64):
+            for shape in ((7,), (5, 3), (160, 709), (3, 4, 600), (2, 0, 3)):
+                x = self.operand(shape, dtype)
+                for view in (x, np.asfortranarray(x), x[::-1] if x.ndim > 1 else x[::2]):
+                    tensor = numerical.asarray(np.ascontiguousarray(view))
+                    for op in ("sum", "mean"):
+                        for axis in range(-view.ndim, view.ndim):
+                            with self.subTest(dtype=np.dtype(dtype).name, shape=view.shape, op=op, axis=axis,
+                                              strides=view.strides):
+                                f = getattr(numerical, op)
+                                got, want = f(view, axis=axis), f(tensor, axis=axis)
+                                self.assertEqual(type(got), type(want))
+                                if isinstance(want, numerical.Tensor):
+                                    self.assertEqual((got.dtype, got.shape), (want.dtype, want.shape))
+                                    self.assertEqual(np.asarray(got).tobytes(), np.asarray(want).tobytes())
+                                else:
+                                    self.assertTrue(got == want or (got != got and want != want))
+        x = self.operand((4, 5), np.float64)
+        fast = numerical._numerical._borrowed_reduce
+        for axis in (2, -3, 2 ** 70, True):
+            self.assertIs(fast("sum", x, axis), NotImplemented)
+        self.assertIs(fast("max", x, 0), NotImplemented)
+        with self.assertRaises(numerical.AxisError):
+            numerical.sum(x, axis=2)
+        tensor = numerical.asarray(x)
+        for axis in (True, (0, 1), (1,)):
+            with self.subTest(axis=axis):
+                got, want = numerical.sum(x, axis=axis), numerical.sum(tensor, axis=axis)
+                self.assertEqual(np.asarray(got).tobytes(), np.asarray(want).tobytes())
+
     def test_an_elementwise_function_reads_the_array_and_gives_the_tensors_bits(self):
         # exp, log, sqrt, sin, cos, tan, tanh and absolute of a NumPy array, read where it lies: the Tensor's result to
         # the byte, of its dtype and shape, for each dtype, empty to a million elements, strided
