@@ -10,6 +10,10 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ### Changed
 
+- **A product of a B narrower than a tile packs its rows without a call per row**: each row of a partial sliver was
+  copied and padded by the C library's `memmove` and `memset`, a few elements each, 40 % of a thin product; a row is
+  now read whole and its padding masked (C++, one M1 Pro core, 20 × 526 by 526 × 10 doubles: 9.5 → 8.0 µs on the NEON
+  tile, 9.9 → 7.5 on the AMX). The same bits.
 - **`take` of the flattened tensor, and `t[index]` of integer indices along the first axis**, read each index and
   copy its element or row in one pass, where they listed the rows first and copied each through a call: take of
   `m·n / 2` random indices of a 167 × 68 Tensor 26.5 → 4.0 µs (NumPy 13.1), 753 × 798 1.52 → 0.27 ms (NumPy 0.75). The

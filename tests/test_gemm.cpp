@@ -452,6 +452,48 @@ TEST(a_last_partial_sliver_of_b_read_in_place_gives_the_ascending_sum)
   }
 }
 
+namespace {
+  // gemm of a B whose rows lie n apart, closer than a sliver's width, in a vector of exactly its k × n elements: its
+  // slivers packed, a partial one's rows read whole past their width into B's next row up to the last row's last
+  // element (past it, under AddressSanitizer, an overflow), against the ascending sum.
+  template <typename T>
+  bool narrow_packed_b_is_exact(std::size_t m,
+                                std::size_t n,
+                                std::size_t k)
+  {
+    std::vector<T> a(m * k);
+    std::vector<T> b(k * n);
+    for (std::size_t i {0}; i < a.size(); ++i) {
+      a[i] = fill<T>(i);
+    }
+    for (std::size_t i {0}; i < b.size(); ++i) {
+      b[i] = fill<T>((i * 5) + 1);
+    }
+    std::vector<T> c(m * n, std::numeric_limits<T>::quiet_NaN());
+    numerical::detail::gemm(m, n, k, a.data(), k, b.data(), n, c.data(), n, numerical::detail::c_start::zero);
+    const std::vector<T> want {reference(m, n, k, a, b)};
+    bool                 same {true};
+    for (std::size_t e {0}; e < c.size(); ++e) {
+      same = same && same_bits(c[e], want[e]);
+    }
+    return same;
+  }
+} // namespace
+
+// B narrower than a sliver, or a partial sliver past whole ones, packed: every width to a sliver's and past, depths of
+// one row, two, three and past a panel, rows within a tile and past one.
+TEST(a_narrow_b_packed_gives_the_ascending_sum)
+{
+  for (const std::size_t n : std::array<std::size_t, 12> {1, 2, 3, 5, 7, 8, 9, 10, 15, 16, 17, 33}) {
+    for (const std::size_t k : std::array<std::size_t, 4> {1, 2, 3, 600}) {
+      for (const std::size_t m : std::array<std::size_t, 3> {1, 20, 40}) {
+        EXPECT(on_every_path([&] { return narrow_packed_b_is_exact<double>(m, n, k); }));
+        EXPECT(on_every_path([&] { return narrow_packed_b_is_exact<float>(m, n, k); }));
+      }
+    }
+  }
+}
+
 // float products on every path, the AMX's among them: whole and partial tiles in place, a last column cutting a
 // tile's first half row or its second, A's slivers by streaming stores to a depth past a multiple of four.
 TEST(float_products_equal_the_ascending_sum_to_the_bit)

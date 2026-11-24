@@ -1111,11 +1111,38 @@ namespace numerical::detail {
                    T*          out)
   {
     // A sliver's row copied whole, then its padding: element by element under a test of the width, the loop took 0.48 ns
-    // an element (one M1 Pro core, 512 × 32 floats: 7.9 µs, most of a thin product on the AMX).
+    // an element (one M1 Pro core, 512 × 32 floats: 7.9 µs, most of a thin product on the AMX). A row of a known width
+    // is copied by a copy of that size, which the compiler makes its loads and stores: a call to the C library's
+    // memmove and memset a row, a few elements each, was 40 % of a thin product (20 × 526 by 526 × 10 doubles on the
+    // AMX, B 10 columns wide and packed: 9.9 → 7.5 µs). A partial sliver's row is read whole too, past its width into
+    // B's next row, and its padding's bytes masked to zero (an element's zero is all zero bits), where that read stays
+    // inside the block (from its first element to its last row's last); its last rows element by element.
     for (std::size_t jr {0}; jr < cols; jr += Nr) {
       const std::size_t width  {std::min(Nr, cols - jr)};
       T*                sliver {out + (jr * kc)};
-      for (std::size_t p {0}; p < kc; ++p) {
+      std::size_t       p      {0};
+      if (width == Nr) {
+        for (; p < kc; ++p) {
+          std::memcpy(sliver + (p * Nr), b + (p * ldb) + jr, Nr * sizeof(T));
+        }
+        continue;
+      }
+      // The block's elements from b + jr on, and a mask of all ones over the sliver's columns, zero past them.
+      const std::size_t readable             {((kc - 1) * ldb) + width};
+      static_assert(std::is_trivially_copyable_v<T>, "a row read and masked as bytes");
+      constexpr std::size_t            bytes {Nr * sizeof(T)};
+      std::array<unsigned char, bytes> keep  {};
+      std::fill_n(keep.begin(), width * sizeof(T), static_cast<unsigned char>(0xFFU));
+      // Never the last row (kc ≥ 1, each panel's depth): its read of Nr elements passes its width, the block's end.
+      for (; (p * ldb) + Nr <= readable; ++p) {
+        std::array<unsigned char, bytes> row {};
+        std::memcpy(row.data(), b + (p * ldb) + jr, bytes);
+        for (std::size_t j {0}; j < bytes; ++j) {
+          row[j] = static_cast<unsigned char>(row[j] & keep[j]);
+        }
+        std::memcpy(sliver + (p * Nr), row.data(), bytes);
+      }
+      for (; p < kc; ++p) {
         T* const row {sliver + (p * Nr)};
         std::copy_n(b + (p * ldb) + jr, width, row);
         std::fill(row + width, row + Nr, T {});
