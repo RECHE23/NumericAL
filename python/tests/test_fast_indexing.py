@@ -60,6 +60,33 @@ class FastIndexing(unittest.TestCase):
         picked = tensor[[1, 1]]
         self.assertFalse(np.shares_memory(np.asarray(picked), np.asarray(tensor)))  # a copy, as NumPy's
 
+    def test_integer_indices_at_the_axis_bounds(self):
+        # Read and gathered in one pass: -extent and extent - 1 taken, a negative one counted from the end, and any past
+        # either end (by one, or the integer's extremes) NotImplemented, for _getitem_advanced and take to refuse in
+        # NumPy's words; blocks of one element (a flattened take) and of several (rows).
+        gather = numerical._numerical._gather_index
+        for shape in ((7,), (7, 3), (5, 2, 2)):
+            extent = shape[0]
+            for name, values in self.operands(shape):
+                tensor = numerical.asarray(values)
+                for width in (np.int64, np.int32):
+                    info = np.iinfo(width)
+                    drawn = self.rng.integers(-extent, extent, size=50)
+                    for index in (np.array([-extent, extent - 1, -1, 0], width), drawn.astype(width), drawn.reshape(5, 10).astype(width)):
+                        with self.subTest(dtype=name, shape=shape, width=width.__name__, index=index.tolist()):
+                            self.assert_like_numpy(gather(tensor, index), values[index])
+                            if len(shape) == 1:
+                                self.assert_like_numpy(gather(tensor, index, True), np.take(values, index))
+                    for outside in (extent, -extent - 1, info.max, info.min):
+                        index = np.array([0, outside, 1], width)
+                        with self.subTest(dtype=name, shape=shape, width=width.__name__, outside=int(outside)):
+                            self.assertIs(gather(tensor, index), NotImplemented)
+                            with self.assertRaises(IndexError) as theirs:
+                                values[index]
+                            with self.assertRaises(IndexError) as ours:
+                                tensor[index]
+                            self.assertEqual(str(ours.exception), str(theirs.exception))
+
     def test_take_of_the_flattened_tensor_and_along_the_first_axis(self):
         a = self.rng.standard_normal((4, 6))
         tensor = numerical.asarray(a)

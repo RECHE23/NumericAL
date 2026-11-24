@@ -3271,6 +3271,7 @@ PyObject* module_gather_index(PyObject* /*self*/, PyObject* args)
     std::size_t                    leading {0}; // the axes the index takes
     borrowed_condition             mask;
     borrowed_indices               integers;
+    bool                           by_integers {false}; // gathered in one pass from `integers`, `rows` unused
     if (borrow_condition(index, mask)) {
         leading = mask.shape.size();
         if (leading == 0 || leading > shape.size() || !std::equal(mask.shape.begin(), mask.shape.end(), shape.begin())) {
@@ -3288,18 +3289,9 @@ PyObject* module_gather_index(PyObject* /*self*/, PyObject* args)
         if (integers.shape.empty() || shape.empty()) {
             return Py_NewRef(Py_NotImplemented);
         }
-        leading = 1;
-        const auto        extent {static_cast<std::int64_t>(shape[0])};
-        const std::size_t count {product(integers.shape.begin(), integers.shape.end())};
-        rows.reserve(count);
-        for (std::size_t i = 0; i < count; ++i) {
-            const std::int64_t at {integers.at(i)};
-            if (at < -extent || at >= extent) { // refused by the general path, in NumPy's words
-                return Py_NewRef(Py_NotImplemented);
-            }
-            rows.push_back(static_cast<std::size_t>(at < 0 ? at + extent : at));
-        }
-        out_shape = integers.shape;
+        leading     = 1;
+        out_shape   = integers.shape;
+        by_integers = true;
     }
     else {
         return Py_NewRef(Py_NotImplemented);
@@ -3307,6 +3299,45 @@ PyObject* module_gather_index(PyObject* /*self*/, PyObject* args)
     out_shape.insert(out_shape.end(), shape.begin() + static_cast<std::ptrdiff_t>(leading), shape.end());
     const std::size_t inner {product(shape.begin() + static_cast<std::ptrdiff_t>(leading), shape.end())};
     try {
+        if (by_integers) {
+            // The indices read and their blocks copied in one pass, an index outside the axis ending it: a pass that
+            // listed the rows first, then copied each through copy_n (a call an element for a flattened take), took
+            // twice NumPy's time (take of 4 · 10⁵ random indices: 1.56 ms, NumPy 0.75).
+            const std::size_t count {product(integers.shape.begin(), integers.shape.end())};
+            const auto        extent {static_cast<std::uint64_t>(shape[0])};
+            bool              inside {true};
+            PyObject* const   answer {std::visit([&](const auto& t) -> PyObject* {
+                using T = element_of_t<std::decay_t<decltype(t)>>;
+                const T* const       source {static_cast<const T*>(data_of(*v))};
+                numerical::buffer<T> out(count * inner);
+                T* const             to {out.data()};
+                const auto           gather = [&]<typename I>(const I* indices) {
+                    for (std::size_t i = 0; i < count; ++i) {
+                        const auto at {static_cast<std::int64_t>(indices[i])};
+                        // a negative index counted from the end; either side outside the axis wraps past `extent`
+                        const auto row {static_cast<std::uint64_t>(at) + (at < 0 ? extent : 0)};
+                        if (row >= extent) { // refused by the general path, in NumPy's words
+                            inside = false;
+                            return;
+                        }
+                        if (inner == 1) {
+                            to[i] = source[row];
+                        }
+                        else {
+                            std::copy_n(source + (row * inner), inner, to + (i * inner));
+                        }
+                    }
+                };
+                if (integers.bytes == 8) {
+                    gather(static_cast<const std::int64_t*>(integers.data));
+                }
+                else {
+                    gather(static_cast<const std::int32_t*>(integers.data));
+                }
+                return inside ? wrap(any_tensor {numerical::tensor<T> {out_shape, std::move(out)}}) : nullptr;
+            }, *v)};
+            return inside ? answer : Py_NewRef(Py_NotImplemented);
+        }
         return std::visit([&](const auto& t) {
             using T = element_of_t<std::decay_t<decltype(t)>>;
             const T* const       source {static_cast<const T*>(data_of(*v))};
