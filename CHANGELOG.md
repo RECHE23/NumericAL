@@ -8,6 +8,8 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+## 2026.11.24 — 2026-11-24
+
 ### Changed
 
 - **A small operation on NumPy arrays allocates less**: `+ - * /` and the comparisons of arrays read where they lie keep
