@@ -1118,6 +1118,35 @@ namespace numerical {
       return pairwise_combine(count, next);
     }
 
+    //! \brief `sums[q] += next[q]` for \p width elements.
+    template <typename T>
+    void add_row(T*          sums,
+                 const T*    next,
+                 std::size_t width) noexcept
+    {
+      for (std::size_t q {0}; q < width; ++q) {
+        sums[q] += next[q];
+      }
+    }
+
+    /*!
+     * \brief \ref add_row of complex numbers, their parts added as reals (their array access, [complex.numbers]): each
+     *        sum's the same additions, which Clang vectorised for `double` alone (160 × 709 complex128 summed along the
+     *        first axis: 50.9 µs, NumPy 36.1).
+     */
+    template <split_complex C>
+    void add_row(C*          sums,
+                 const C*    next,
+                 std::size_t width) noexcept
+    {
+      using real_type = typename C::value_type;
+      auto* const       to   {reinterpret_cast<real_type*>(sums)};       // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): a complex number's array access
+      const auto* const from {reinterpret_cast<const real_type*>(next)}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): as above
+      for (std::size_t q {0}; q < 2 * width; ++q) {
+        to[q] += from[q];
+      }
+    }
+
     /*!
      * \brief \ref pairwise_sum of \p width neighbouring columns at once, into \p out: column `q`'s sum that of
      *        `pairwise_sum(first + q, count, stride)`, to the bit, each step adding a whole row of the columns
@@ -1137,9 +1166,7 @@ namespace numerical {
       if (count < lanes) {
         std::fill_n(out, width, T {});
         for (std::size_t i {0}; i < count; ++i) {
-          for (std::size_t q {0}; q < width; ++q) {
-            out[q] += row(i)[q];
-          }
+          add_row(out, row(i), width);
         }
         return;
       }
@@ -1151,11 +1178,7 @@ namespace numerical {
         std::size_t i {lanes};
         for (; i < count - (count % lanes); i += lanes) {
           for (std::size_t j {0}; j < lanes; ++j) {
-            T* const       sums {partial.data() + (j * width)};
-            const T* const next {row(i + j)};
-            for (std::size_t q {0}; q < width; ++q) {
-              sums[q] += next[q];
-            }
+            add_row(partial.data() + (j * width), row(i + j), width);
           }
         }
         const T* const p {partial.data()};
@@ -1163,9 +1186,7 @@ namespace numerical {
           out[q] = tree::combine(p + q, width);
         }
         for (; i < count; ++i) {
-          for (std::size_t q {0}; q < width; ++q) {
-            out[q] += row(i)[q];
-          }
+          add_row(out, row(i), width);
         }
         return;
       }

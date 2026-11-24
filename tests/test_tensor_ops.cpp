@@ -929,6 +929,41 @@ TEST(sum_is_pairwise_and_reduces_along_an_axis)
   EXPECT_THROWS((void)numerical::sum(cube, 3), numerical::dimension_error);
 }
 
+namespace {
+  // The complex sums of t along its first axis against each column's pairwise sum alone (detail::pairwise_sum, NumPy's
+  // tree for complex numbers): the rows added at once, as reals, the same bits.
+  template <typename T>
+  bool complex_columns_sum_as_each_alone(std::size_t rows,
+                                         std::size_t columns)
+  {
+    using real_type = T::value_type;
+    std::vector<T> values(rows * columns);
+    for (std::size_t i {0}; i < values.size(); ++i) {
+      const double at {static_cast<double>(i)};
+      values[i] = T {static_cast<real_type>(std::sin(at * 0.37) * 1e3), static_cast<real_type>(std::cos(at * 0.11) * 1e-3)};
+    }
+    const tensor<T> t    {{rows, columns}, values};
+    const tensor<T> sums {numerical::sum(t, 0)};
+    bool            same {true};
+    for (std::size_t q {0}; q < columns; ++q) {
+      const T alone {numerical::detail::pairwise_sum(values.data() + q, rows, columns)};
+      same = same && std::bit_cast<std::array<real_type, 2>>(sums.data()[q]) == std::bit_cast<std::array<real_type, 2>>(alone);
+    }
+    return same;
+  }
+} // namespace
+
+// Rows fewer than the tree's four partial sums, within one block of 64 and past it, by columns one to past a run of 512.
+TEST(complex_sums_along_the_first_axis_are_each_columns_pairwise_sum)
+{
+  for (const std::size_t rows : std::array<std::size_t, 9> {1, 3, 4, 5, 63, 64, 65, 129, 300}) {
+    for (const std::size_t columns : std::array<std::size_t, 6> {1, 2, 3, 9, 600, 1030}) {
+      EXPECT(complex_columns_sum_as_each_alone<std::complex<double>>(rows, columns));
+      EXPECT(complex_columns_sum_as_each_alone<std::complex<float>>(rows, columns));
+    }
+  }
+}
+
 TEST(max_and_min_propagate_nan_and_refuse_an_empty_reduction)
 {
   const tensor<double> cube {counting({2, 3, 4})};

@@ -10,6 +10,11 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ### Changed
 
+- **`sum` and `mean` of a NumPy array along an axis** read it where it lies, as of every element already, where it
+  was copied into a Tensor first: 160 × 709 doubles along the first axis 53.7 → 17.8 µs (NumPy 19.3). The same bits.
+- **Complex sums and means along an axis add their rows as reals**: each partial sum the same additions, which only
+  `double`'s loop vectorised: 160 × 709 complex128 along the first axis 50.9 → 34.4 µs (NumPy 35.9), 689 × 230
+  88.9 → 54.0 µs (NumPy 54.1). The same bits.
 - **A product of a B narrower than a tile packs its rows without a call per row**: each row of a partial sliver was
   copied and padded by the C library's `memmove` and `memset`, a few elements each, 40 % of a thin product; a row is
   now read whole and its padding masked (C++, one M1 Pro core, 20 × 526 by 526 × 10 doubles: 9.5 → 8.0 µs on the NEON
