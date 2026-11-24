@@ -8,6 +8,8 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+## 2026.11.23 — 2026-11-24
+
 ### Changed
 
 - **`sum` and `mean` of a NumPy array along an axis** read it where it lies, as of every element already, where it
